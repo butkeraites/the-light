@@ -8,7 +8,8 @@ pub mod embedded;
 
 pub use embedded::EmbeddedSource;
 
-use crate::model::{Passage, Reference, Translation, TranslationId};
+use crate::model::{Passage, Reference, SearchHit, Translation, TranslationId};
+use crate::search::SearchOptions;
 
 /// Erros da camada de fontes.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +40,9 @@ pub trait BibleSource {
     /// se a referência for válida mas não existir texto (ex.: capítulo fora do
     /// alcance do livro).
     fn passage(&self, r: &Reference, t: &TranslationId) -> Result<Passage>;
+
+    /// Busca full-text por relevância, conforme [`SearchOptions`].
+    fn search(&self, query: &str, opts: &SearchOptions) -> Result<Vec<SearchHit>>;
 
     /// `true` se o texto desta fonte pode ser embarcado/redistribuído.
     fn is_embeddable(&self) -> bool;

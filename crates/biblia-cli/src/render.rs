@@ -6,6 +6,14 @@
 
 use std::collections::BTreeSet;
 
+use biblia_core::search::{HL_END, HL_START};
+
+/// Substitui os marcadores de destaque por colchetes (forma textual simples).
+/// O realce com cor é tratado na camada de tema (T1.4).
+pub fn highlight_brackets(s: &str) -> String {
+    s.replace(HL_START, "[").replace(HL_END, "]")
+}
+
 /// Largura mínima útil de uma coluna; abaixo disso caímos para blocos.
 pub const MIN_COL_WIDTH: usize = 18;
 /// Separador visual entre colunas (3 colunas visíveis).

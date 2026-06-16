@@ -280,6 +280,22 @@ impl Passage {
     }
 }
 
+/// Um resultado de busca full-text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchHit {
+    /// Versículo onde o termo foi encontrado.
+    pub reference: Reference,
+    /// Tradução de origem.
+    pub translation: TranslationId,
+    /// Texto do versículo (sem marcação).
+    pub text: String,
+    /// Texto com os termos casados envolvidos por marcadores
+    /// ([`crate::search::HL_START`]/[`crate::search::HL_END`]).
+    pub highlighted: String,
+    /// Pontuação BM25 (menor = melhor correspondência).
+    pub score: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

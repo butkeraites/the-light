@@ -6,8 +6,9 @@ use rusqlite::{params, Connection};
 
 use super::{BibleSource, Result, SourceError};
 use crate::model::{
-    Lang, License, Passage, Reference, Translation, TranslationId, Verse, VerseRange,
+    Lang, License, Passage, Reference, SearchHit, Translation, TranslationId, Verse, VerseRange,
 };
+use crate::search::{self, SearchOptions};
 use crate::store::Store;
 
 /// Fonte de texto bíblico embarcado, lendo de uma conexão SQLite.
@@ -134,6 +135,15 @@ impl BibleSource for EmbeddedSource<'_> {
             reference: *r,
             verses,
         })
+    }
+
+    fn search(&self, query: &str, opts: &SearchOptions) -> Result<Vec<SearchHit>> {
+        if !self.has_translation(&opts.translation)? {
+            return Err(SourceError::UnknownTranslation(
+                opts.translation.to_string(),
+            ));
+        }
+        Ok(search::search(self.conn, query, opts)?)
     }
 
     fn is_embeddable(&self) -> bool {

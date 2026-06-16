@@ -4,6 +4,7 @@
 
 mod read;
 mod render;
+mod search;
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -20,11 +21,14 @@ struct Cli {
 enum Command {
     /// Lê uma passagem, ex.: `biblia read "John 3:16" --version kjv`.
     Read(read::ReadArgs),
+    /// Busca full-text, ex.: `biblia search "graça" --version alm1911`.
+    Search(search::SearchArgs),
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Read(args) => read::run(args),
+        Command::Search(args) => search::run(args),
     }
 }

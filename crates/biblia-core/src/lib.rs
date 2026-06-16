@@ -11,6 +11,7 @@
 
 pub mod model;
 pub mod reference;
+pub mod search;
 pub mod source;
 pub mod store;
 
