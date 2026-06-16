@@ -30,5 +30,6 @@ pub fn run(store: Store, version: TranslationId) -> Result<()> {
             _ => {}
         }
     }
+    app.save_config();
     Ok(())
 }

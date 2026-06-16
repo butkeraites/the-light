@@ -9,7 +9,11 @@
 |---|---|---|---|
 | T3.1 | 2026-06-16 | Shell da TUI (`biblia-tui`): guarda RAII do terminal + hook de panic, layout (livros + viewport), navegação por teclado (livros/capítulos/scroll), `biblia tui`; 7 testes (estado + snapshot TestBackend) + 2 integração | 07d29f7 |
 | T3.2 | 2026-06-16 | Viewport rolável + troca de versão (`v`, mantém passagem) + ir-para-referência (`g`, prompt com erro); 9 testes TUI | a0d0719 |
-| T3.3 | 2026-06-16 | Cursor de versículo + painel lateral (marcações/nota/xref sincronizados) + navegação de xref na TUI (`x`, Enter salta); 9 testes TUI | _pendente_ |
+| T3.3 | 2026-06-16 | Cursor de versículo + painel lateral (marcações/nota/xref sincronizados) + navegação de xref na TUI (`x`, Enter salta); 9 testes TUI | 50fa430 |
+| T3.4 | 2026-06-16 | Busca interativa (`/`, incremental, Enter salta) + tema (`t`, dark/light/none) persistido no config.toml ao sair; degradação graciosa; 14 testes TUI | _pendente_ |
+
+**Marco 3** (2026-06-16): TUI completa de leitura/estudo. Tag `v0.4.0`.
+Suíte: 171 testes + 1 doctest, `clippy -D warnings` e `fmt` verdes.
 
 ## Fase 2 — Estudo pessoal (offline)
 

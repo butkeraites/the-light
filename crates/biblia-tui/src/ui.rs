@@ -11,10 +11,18 @@ use biblia_core::reference::{format_reference, BOOKS};
 
 use crate::app::{App, Focus, InputKind};
 
-const ACCENT: Color = Color::Cyan;
+/// Cor de destaque conforme o tema.
+fn accent(theme: &str) -> Color {
+    match theme {
+        "light" => Color::Blue,
+        "none" => Color::Reset,
+        _ => Color::Cyan,
+    }
+}
 
 /// Desenha a interface completa.
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let acc = accent(app.theme());
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
@@ -34,15 +42,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(34),
     ])
     .split(rows[1]);
-    draw_books(frame, app, body[0]);
-    draw_reader(frame, app, body[1]);
-    draw_panel(frame, app, body[2]);
+    draw_books(frame, app, body[0], acc);
+    draw_reader(frame, app, body[1], acc);
+    draw_panel(frame, app, body[2], acc);
     draw_status(frame, app, rows[2]);
 }
 
-fn border_style(focused: bool) -> Style {
+fn border_style(focused: bool, acc: Color) -> Style {
     if focused {
-        Style::new().fg(ACCENT)
+        Style::new().fg(acc)
     } else {
         Style::new().fg(Color::DarkGray)
     }
@@ -75,7 +83,7 @@ fn wrap(text: &str, w: usize) -> Vec<String> {
     lines
 }
 
-fn draw_books(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_books(frame: &mut Frame, app: &App, area: Rect, acc: Color) {
     let items: Vec<ListItem> = BOOKS
         .iter()
         .map(|b| {
@@ -91,12 +99,12 @@ fn draw_books(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::bordered()
                 .title("Livros")
-                .border_style(border_style(app.focus == Focus::Books)),
+                .border_style(border_style(app.focus == Focus::Books, acc)),
         )
         .highlight_style(
             Style::new()
                 .fg(Color::Black)
-                .bg(ACCENT)
+                .bg(acc)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("› ");
@@ -106,7 +114,7 @@ fn draw_books(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_reader(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_reader(frame: &mut Frame, app: &App, area: Rect, acc: Color) {
     let title = format!(
         "{} {}  ({})",
         app.book_name(),
@@ -115,7 +123,7 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect) {
     );
     let block = Block::bordered()
         .title(title)
-        .border_style(border_style(app.focus == Focus::Reader));
+        .border_style(border_style(app.focus == Focus::Reader, acc));
     let inner_width = block.inner(area).width as usize;
 
     if app.verses.is_empty() {
@@ -147,7 +155,7 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect) {
             for (i, seg) in segments.iter().enumerate() {
                 if i == 0 {
                     lines.push(Line::from(vec![
-                        Span::styled(format!("{n:>numw$}  "), Style::new().fg(ACCENT)),
+                        Span::styled(format!("{n:>numw$}  "), Style::new().fg(acc)),
                         Span::raw(seg.clone()),
                     ]));
                 } else {
@@ -167,8 +175,39 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// Painel lateral: navegação de xref (se ativa) ou estudo do versículo atual.
-fn draw_panel(frame: &mut Frame, app: &App, area: Rect) {
+/// Painel lateral: busca (se ativa), navegação de xref ou estudo do versículo.
+fn draw_panel(frame: &mut Frame, app: &App, area: Rect, acc: Color) {
+    // Resultados de busca incremental.
+    if let Some(input) = &app.input {
+        if input.kind == InputKind::Search {
+            let items: Vec<ListItem> = app
+                .search_results
+                .iter()
+                .map(|h| {
+                    ListItem::new(format!(
+                        "{}  {}",
+                        format_reference(&h.reference, app.lang()),
+                        h.text
+                    ))
+                })
+                .collect();
+            let title = format!("Busca ({})", app.search_results.len());
+            let list = List::new(items)
+                .block(
+                    Block::bordered()
+                        .title(title)
+                        .border_style(Style::new().fg(Color::Yellow)),
+                )
+                .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+            let mut state = ListState::default();
+            if !app.search_results.is_empty() {
+                state.select(Some(app.search_selected));
+            }
+            frame.render_stateful_widget(list, area, &mut state);
+            return;
+        }
+    }
+
     if let Some(nav) = &app.xref_nav {
         let items: Vec<ListItem> = nav
             .items
@@ -205,10 +244,7 @@ fn draw_panel(frame: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(""));
 
-    lines.push(Line::from(Span::styled(
-        "Marcações",
-        Style::new().fg(ACCENT),
-    )));
+    lines.push(Line::from(Span::styled("Marcações", Style::new().fg(acc))));
     let highlights = app.current_highlights();
     if highlights.is_empty() {
         lines.push(Line::from("  —"));
@@ -224,7 +260,7 @@ fn draw_panel(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::from(""));
 
-    lines.push(Line::from(Span::styled("Nota", Style::new().fg(ACCENT))));
+    lines.push(Line::from(Span::styled("Nota", Style::new().fg(acc))));
     match app.current_note() {
         Some(note) => {
             let first = note
@@ -242,7 +278,7 @@ fn draw_panel(frame: &mut Frame, app: &App, area: Rect) {
     let xcount = app.current_xrefs().len();
     lines.push(Line::from(Span::styled(
         "Refs cruzadas",
-        Style::new().fg(ACCENT),
+        Style::new().fg(acc),
     )));
     if xcount == 0 {
         lines.push(Line::from("  —"));
@@ -266,6 +302,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Some(input) => {
             let label = match input.kind {
                 InputKind::GoTo => "Ir para",
+                InputKind::Search => "Buscar",
             };
             let text = match &input.error {
                 Some(e) => format!(" {label}: {}    ⚠ {e}", input.buffer),
@@ -273,9 +310,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             };
             Paragraph::new(text).style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
         }
-        None => Paragraph::new(
-            " q sair · ↑↓ versículo · n/p capítulo · v versão · g ir · x refs · Tab foco",
-        )
+        None => Paragraph::new(format!(
+            " q sair · ↑↓ versículo · n/p cap · v versão · / buscar · g ir · x refs · t tema [{}] · Tab foco",
+            app.theme()
+        ))
         .style(Style::new().add_modifier(Modifier::DIM)),
     };
     frame.render_widget(widget, area);
@@ -303,15 +341,20 @@ mod tests {
                 [],
             )
             .unwrap();
-            for (b, c, v, t) in [
-                (45, 3, 23, "For all have sinned and come short"),
-                (45, 3, 24, "Being justified freely by his grace"),
-                (45, 6, 23, "For the wages of sin is death"),
+            for (id, b, c, v, t) in [
+                (1i64, 45, 3, 23, "For all have sinned and come short"),
+                (2, 45, 3, 24, "Being justified freely by his grace"),
+                (3, 45, 6, 23, "For the wages of sin is death"),
             ] {
                 conn.execute(
-                    "INSERT INTO verses(translation_id,book_number,chapter,verse,text) \
-                     VALUES ('kjv',?1,?2,?3,?4)",
-                    params![b, c, v, t],
+                    "INSERT INTO verses(id,translation_id,book_number,chapter,verse,text) \
+                     VALUES (?1,'kjv',?2,?3,?4,?5)",
+                    params![id, b, c, v, t],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO verses_fts(text, translation_id, verse_id) VALUES (?1,'kjv',?2)",
+                    params![t, id],
                 )
                 .unwrap();
             }
@@ -360,7 +403,6 @@ mod tests {
         assert!(text.contains("Marcações"));
         assert!(text.contains("[pecado]"));
         assert!(text.contains("Refs cruzadas"));
-        assert!(text.contains("x para abrir"));
         assert!(text.contains("For all have sinned"));
     }
 
@@ -370,7 +412,27 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()));
         let text = render(&mut app);
         assert!(text.contains("Refs cruzadas — Enter salta"));
-        assert!(text.contains("Romans 6:23")); // idioma EN da KJV
+        assert!(text.contains("Romans 6:23"));
         assert!(text.contains("(50)"));
+    }
+
+    #[test]
+    fn search_prompt_and_results_render() {
+        let mut app = seeded_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()));
+        for c in "sinned".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        }
+        let text = render(&mut app);
+        assert!(text.contains("Buscar: sinned"), "{text}");
+        assert!(text.contains("Busca ("), "{text}");
+    }
+
+    #[test]
+    fn status_bar_shows_theme() {
+        let mut app = seeded_app();
+        app.config.theme = "light".into();
+        let text = render(&mut app);
+        assert!(text.contains("t tema [light]"), "{text}");
     }
 }

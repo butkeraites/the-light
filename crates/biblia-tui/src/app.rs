@@ -3,12 +3,17 @@
 use anyhow::{anyhow, Result};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use biblia_core::model::{Lang, Reference, TranslationId};
+use biblia_core::config::Config;
+use biblia_core::model::{Lang, Reference, SearchHit, TranslationId};
 use biblia_core::reference::{parse_reference, BOOKS};
+use biblia_core::search::{self, SearchOptions};
 use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
 use biblia_core::userdata::{Highlight, HighlightStore, Note, NoteStore};
 use biblia_core::xref::{self, CrossRef};
+
+/// Temas disponíveis, ciclados pela tecla `t` e persistidos em `config.toml`.
+pub const THEMES: &[&str] = &["dark", "light", "none"];
 
 /// Qual painel tem o foco do teclado.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +29,8 @@ pub enum Focus {
 pub enum InputKind {
     /// Ir para uma referência.
     GoTo,
+    /// Busca full-text incremental.
+    Search,
 }
 
 /// Estado de uma entrada de texto (prompt inferior).
@@ -75,10 +82,16 @@ pub struct App {
     pub input: Option<Input>,
     /// Navegação de referências cruzadas ativa, se houver.
     pub xref_nav: Option<XrefNav>,
+    /// Resultados da busca incremental (quando o prompt de busca está ativo).
+    pub search_results: Vec<SearchHit>,
+    /// Resultado selecionado na lista de busca.
+    pub search_selected: usize,
     /// Marcações do usuário (carregadas do disco).
     pub highlights: Vec<Highlight>,
     /// Notas do usuário (carregadas do disco).
     pub notes: Vec<Note>,
+    /// Preferências (tema etc.).
+    pub config: Config,
     /// Sai do loop quando `true`.
     pub should_quit: bool,
 }
@@ -117,16 +130,19 @@ impl App {
             focus: Focus::Books,
             input: None,
             xref_nav: None,
+            search_results: Vec::new(),
+            search_selected: 0,
             highlights: Vec::new(),
             notes: Vec::new(),
+            config: Config::default(),
             should_quit: false,
         };
         app.reload()?;
         Ok(app)
     }
 
-    /// Carrega marcações e notas do disco (tolerante a erros). Chamado pela
-    /// `run`; os testes injetam os dados diretamente.
+    /// Carrega marcações, notas e preferências do disco (tolerante a erros).
+    /// Chamado pela `run`; os testes injetam os dados diretamente.
     pub fn load_userdata(&mut self) {
         self.highlights = HighlightStore::load_default()
             .map(|s| s.list().to_vec())
@@ -134,6 +150,52 @@ impl App {
         self.notes = NoteStore::open_default()
             .and_then(|s| s.list())
             .unwrap_or_default();
+        self.config = Config::load().unwrap_or_default();
+    }
+
+    /// Tema atual (`dark`/`light`/`none`).
+    pub fn theme(&self) -> &str {
+        &self.config.theme
+    }
+
+    /// Cicla o tema (em memória; persistido por [`App::save_config`] ao sair).
+    pub fn cycle_theme(&mut self) {
+        let cur = THEMES
+            .iter()
+            .position(|t| *t == self.config.theme)
+            .unwrap_or(THEMES.len() - 1);
+        self.config.theme = THEMES[(cur + 1) % THEMES.len()].to_string();
+    }
+
+    /// Persiste as preferências em `config.toml` (best-effort).
+    pub fn save_config(&self) {
+        let _ = self.config.save();
+    }
+
+    /// Abre o prompt de busca incremental.
+    pub fn open_search(&mut self) {
+        self.input = Some(Input {
+            kind: InputKind::Search,
+            buffer: String::new(),
+            error: None,
+        });
+        self.search_results.clear();
+        self.search_selected = 0;
+    }
+
+    /// Reexecuta a busca a partir do texto digitado (FTS5 na versão ativa).
+    fn run_search(&mut self) {
+        let query = match self.input.as_ref() {
+            Some(i) if i.kind == InputKind::Search => i.buffer.clone(),
+            _ => return,
+        };
+        let opts = SearchOptions {
+            translation: self.version().clone(),
+            book: None,
+            limit: 100,
+        };
+        self.search_results = search::search(self.store.conn(), &query, &opts).unwrap_or_default();
+        self.search_selected = 0;
     }
 
     /// Versão ativa.
@@ -342,6 +404,8 @@ impl App {
             }
             KeyCode::Char('v') => self.cycle_version(),
             KeyCode::Char('x') => self.open_xrefs(),
+            KeyCode::Char('t') => self.cycle_theme(),
+            KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('g') => {
                 self.input = Some(Input {
                     kind: InputKind::GoTo,
@@ -388,15 +452,34 @@ impl App {
         let Some(input) = self.input.as_mut() else {
             return;
         };
+        let is_search = input.kind == InputKind::Search;
         match key.code {
-            KeyCode::Esc => self.input = None,
+            KeyCode::Esc => {
+                self.input = None;
+                self.search_results.clear();
+            }
             KeyCode::Backspace => {
                 input.buffer.pop();
                 input.error = None;
+                if is_search {
+                    self.run_search();
+                }
             }
             KeyCode::Char(c) => {
                 input.buffer.push(c);
                 input.error = None;
+                if is_search {
+                    self.run_search();
+                }
+            }
+            // Na busca, ↑↓ movem a seleção dos resultados.
+            KeyCode::Down if is_search => {
+                if self.search_selected + 1 < self.search_results.len() {
+                    self.search_selected += 1;
+                }
+            }
+            KeyCode::Up if is_search => {
+                self.search_selected = self.search_selected.saturating_sub(1);
             }
             KeyCode::Enter => self.submit_input(),
             _ => {}
@@ -419,6 +502,14 @@ impl App {
                     }
                 }
             },
+            InputKind::Search => {
+                if let Some(hit) = self.search_results.get(self.search_selected) {
+                    let reference = hit.reference;
+                    self.input = None;
+                    self.search_results.clear();
+                    self.go_to(&reference);
+                }
+            }
         }
     }
 
@@ -584,5 +675,59 @@ mod tests {
         app.handle_key(key(KeyCode::Char('v'))); // → alm (só tem 3:23)
         assert_eq!(app.version_label(), "ALM");
         assert_eq!(app.current_verse(), Some(23));
+    }
+
+    #[test]
+    fn interactive_search_filters_and_jumps() {
+        let mut app = seeded_app();
+        // Precisa do índice FTS para a versão kjv: insere para os versículos.
+        {
+            let conn = app.store.conn();
+            for (id, txt) in [
+                (1i64, "For all have sinned"),
+                (2, "Being justified freely by his grace"),
+            ] {
+                conn.execute(
+                    "INSERT INTO verses_fts(text, translation_id, verse_id) VALUES (?1,'kjv',?2)",
+                    params![txt, id],
+                )
+                .unwrap();
+            }
+        }
+        app.handle_key(key(KeyCode::Char('/')));
+        assert!(matches!(
+            app.input.as_ref().map(|i| i.kind),
+            Some(InputKind::Search)
+        ));
+        type_str(&mut app, "sinned");
+        assert!(!app.search_results.is_empty(), "deveria filtrar resultados");
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.input.is_none());
+        // Saltou para o versículo com "sinned" (Rm 3:23, verse_id 1).
+        assert_eq!(app.current_verse(), Some(23));
+    }
+
+    #[test]
+    fn search_no_match_then_esc() {
+        let mut app = seeded_app();
+        app.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut app, "zzqqxx");
+        assert!(app.search_results.is_empty());
+        app.handle_key(key(KeyCode::Enter)); // sem resultado: não salta, prompt continua
+        assert!(app.input.is_some());
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.input.is_none());
+    }
+
+    #[test]
+    fn theme_cycles_in_memory() {
+        let mut app = seeded_app();
+        app.config.theme = "dark".to_string();
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.theme(), "light");
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.theme(), "none");
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.theme(), "dark");
     }
 }

@@ -3,10 +3,10 @@
 > Leitor de Bíblia hackeável para terminal, com estudo exegético assistido por IA
 > (lente denominacional configurável), dados locais e modelo *bring-your-own-key*.
 
-Status: **Fase 2 — Estudo pessoal concluída** (Marco 2, `v0.3.0`): highlights, notas
-em Markdown, referências cruzadas (TSK) e export — além da leitura/busca da Fase 1.
-Veja [`SPEC.md`](SPEC.md) para a visão e
-[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap executável.
+Status: **Fase 3 — TUI concluída** (Marco 3, `v0.4.0`): interface `ratatui` completa
+(navegação, leitura, painéis de estudo, busca interativa, tema) — sobre a base de
+leitura/busca (Fase 1) e estudo pessoal (Fase 2). Veja [`SPEC.md`](SPEC.md) para a
+visão e [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap.
 
 ## Uso rápido
 
@@ -31,6 +31,10 @@ cargo run -p biblia-cli -- note add "Jo 3.16" "Versículo **central**."
 cargo run -p xtask -- import-xref --db data/biblia.sqlite   # referências cruzadas (TSK)
 cargo run -p biblia-cli -- xref "Rm 3.23" --db data/biblia.sqlite
 cargo run -p biblia-cli -- export notes --format md --output notas.md
+
+# 6. Interface de terminal (TUI) completa:
+cargo run -p biblia-cli -- tui --db data/biblia.sqlite
+#   ↑↓ versículo · n/p capítulo · v versão · / buscar · g ir · x refs · t tema · q sair
 ```
 
 > Dados do usuário (notas `.md`, `highlights.json`) vivem em arquivos abertos e
