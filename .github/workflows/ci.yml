@@ -53,3 +53,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo build
         run: cargo build --workspace
+
+  # Valida o build de release com Cargo.lock travado (paridade com o release.yml),
+  # pegando cedo problemas de resolução que `cargo test` (sem --locked) não pega.
+  locked-release:
+    name: build --release --locked
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build --release --locked
+        run: cargo build --release --locked -p biblia-cli

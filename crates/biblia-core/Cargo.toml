@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+# v1.0.0 distribui binário + Homebrew + `cargo install --git`; não no crates.io (ADR-0011).
+publish = false
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock"] }

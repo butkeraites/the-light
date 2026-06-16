@@ -50,7 +50,7 @@ fn fit(s: &str, w: usize) -> String {
         s.to_string()
     } else if len < w {
         let mut out = s.to_string();
-        out.extend(std::iter::repeat(' ').take(w - len));
+        out.extend(std::iter::repeat_n(' ', w - len));
         out
     } else if w == 0 {
         String::new()

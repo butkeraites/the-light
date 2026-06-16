@@ -56,6 +56,10 @@ fn biblia() -> Command {
         "BIBLIA_DATA_DIR",
         std::env::temp_dir().join("biblia_absent_data_dir"),
     );
+    cmd.env(
+        "BIBLIA_SECRETS",
+        std::env::temp_dir().join("biblia_absent_secrets.toml"),
+    );
     cmd
 }
 
@@ -70,6 +74,8 @@ fn lists_related_verses_with_text_and_hides_disputed() {
         .stdout(contains("Romanos 6.23")) // idioma padrão pt
         .stdout(contains("For the wages of sin"))
         .stdout(contains("(50)"))
+        // Atribuição CC-BY obrigatória dos dados de referências cruzadas.
+        .stdout(contains("OpenBible.info (CC-BY)"))
         // A disputada (votos -5) não aparece por padrão.
         .stdout(contains("Romanos 3.9").not());
 }

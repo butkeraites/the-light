@@ -136,8 +136,15 @@ pub fn run(args: XrefArgs) -> ExitCode {
         }
     }
 
+    // Atribuição obrigatória CC-BY dos dados de referências cruzadas.
+    println!();
+    println!("{}", style.dim(XREF_ATTRIBUTION));
+
     ExitCode::from(EXIT_OK)
 }
+
+/// Atribuição CC-BY exigida para os dados de referências cruzadas (OpenBible.info).
+pub const XREF_ATTRIBUTION: &str = "Referências cruzadas cortesia de OpenBible.info (CC-BY).";
 
 /// Texto do primeiro versículo do destino (com `…` se for intervalo).
 fn verse_snippet(

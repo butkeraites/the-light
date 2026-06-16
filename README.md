@@ -11,22 +11,25 @@ e [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap.
 ## Instalação
 
 ```sh
-# Via cargo (compila do código):
-cargo install biblia-cli            # instala o binário `biblia`
-
-# Ou compilando o repositório:
-cargo install --path crates/biblia-cli
+# Binário pré-compilado (recomendado) — baixe o da sua plataforma em:
+#   https://github.com/rbritobut/biblia/releases
+# (cada arquivo vem com um `.sha256` para conferência).
 
 # Ou Homebrew (macOS/Linux), quando o tap estiver publicado:
 brew install rbritobut/tap/biblia
 
-# Ou baixe o binário pré-compilado da sua plataforma em:
-#   https://github.com/rbritobut/biblia/releases
-# (cada arquivo vem com um `.sha256` para conferência).
+# Ou compilando com cargo, direto do repositório (instala o binário `biblia`):
+cargo install --git https://github.com/rbritobut/biblia biblia-cli
+
+# Ou de um clone local:
+cargo install --path crates/biblia-cli
 ```
 
-> Requer apenas o binário — SQLite vem embutido e o TLS é `rustls` (sem OpenSSL
-> de sistema). Gere o banco de versões livres uma vez (passo 1 abaixo).
+> **Distribuição:** v1.0.0 sai via binários (GitHub Releases), Homebrew e
+> `cargo install --git`/`--path` — as crates **não** são publicadas no crates.io
+> (ver `DECISIONS.md`, ADR-0011). Requer apenas o binário: SQLite vem embutido e
+> o TLS é `rustls` (sem OpenSSL de sistema). Gere o banco de versões livres uma
+> vez (passo 1 abaixo). MSRV: Rust **1.85**.
 
 ## Uso rápido
 

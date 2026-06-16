@@ -8,6 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+# v1.0.0 distribui binário + Homebrew + `cargo install --git`; não no crates.io (ADR-0011).
+# (metadados crates.io mantidos abaixo caso a publicação seja habilitada no futuro.)
+publish = false
 readme = "../../README.md"
 keywords = ["bible", "cli", "tui", "scripture", "study"]
 categories = ["command-line-utilities", "text-processing"]

@@ -92,6 +92,20 @@ versão local primeiro, senão conector; sem chave → erro claro **sem** rede.
 cacheado em massa; testes cobrem builders/parsing e o caminho sem-chave, nunca a
 rede. Comparação `--bible-id` exigido para API.Bible; ESV não precisa.
 
+## ADR-0011 — Distribuição do v1.0.0 sem crates.io · 2026-06-16
+**Contexto:** o plano pede `cargo install`, Homebrew e binários. Publicar no
+crates.io exige publicar também `biblia-core`/`biblia-tui` como pacotes públicos
+(contratos de API a manter) e lida mal com o fluxo de banco/dados; o nome do
+binário (`biblia`) difere do crate (`biblia-cli`).
+**Decisão:** no v1.0.0 a distribuição é por **binários pré-compilados** (GitHub
+Releases, multiplataforma + `.sha256`), **Homebrew** (tap) e **`cargo install
+--git`/`--path`**. Todas as crates do workspace são `publish = false` (evita
+publicação acidental). O `cargo install --git`/`--path` funciona mesmo com
+`publish = false` (só bloqueia `cargo publish`). Publicar no crates.io fica como
+evolução futura (os metadados de pacote já estão prontos no `biblia-cli`).
+**Consequência:** README documenta os caminhos que funcionam de fato; nenhum
+`cargo install biblia-cli` enganoso; sem etapa de `cargo publish` no release.
+
 ## ADR-0004 — Licença do código `MIT OR Apache-2.0` · 2026-06-15
 **Contexto:** o SPEC sugere MIT ou Apache-2.0; convenção do ecossistema Rust é dupla.
 **Decisão:** `MIT OR Apache-2.0` para o código. Dados bíblicos seguem suas próprias

@@ -7,12 +7,22 @@
 
 | Tarefa | Data | Resumo | Commit |
 |---|---|---|---|
-| T7.1 | 2026-06-16 | Empacotamento: versão do workspace → `1.0.0` (pins internos sincronizados); metadados crates.io no `biblia-cli` (keywords/categories/readme); CI (`.github/workflows/ci.yml`: fmt+clippy, testes Linux/macOS/Windows, build MSRV 1.80); release (`release.yml`: binários x86_64/aarch64 + .sha256 em tags `v*`); fórmula Homebrew (`packaging/homebrew/biblia.rb`) | _pendente_ |
+| T7.1 | 2026-06-16 | Empacotamento: versão do workspace → `1.0.0` (pins internos sincronizados); metadados crates.io no `biblia-cli` (keywords/categories/readme); CI (`.github/workflows/ci.yml`: fmt+clippy, testes Linux/macOS/Windows, build MSRV 1.85); release (`release.yml`: binários x86_64/aarch64 + .sha256 em tags `v*`); fórmula Homebrew (`packaging/homebrew/biblia.rb`) | _pendente_ |
 | T7.2 | 2026-06-16 | Documentação: README com instalação + privacidade/telemetria-zero + licença; `--help` de qualidade (long_about + exemplos); guia de prompts editáveis (`docs/PROMPTS.md`); DATA_SOURCES §4 (conectores) | _pendente_ |
 | T7.3 | 2026-06-16 | Hardening: `LICENSE-MIT` + `LICENSE-APACHE`; telemetria zero documentada; deps internas com versão (publicável); fix do `--version` (colisão clap `propagate_version` × flag de versão da Bíblia); testes de metadados (`meta_cmd.rs`: --version/--help/subcomandos) | _pendente_ |
 
 **Marco 7** (2026-06-16): release pública. Tag `v1.0.0`. Suíte: 243 testes,
 `clippy -D warnings` e `fmt` verdes.
+
+**Revisão adversarial pós-Marco 7** (2026-06-16): 13 achados → 10 confirmados →
+corrigidos: **(crítico)** estratégia de distribuição coerente — `publish = false`
+em todas as crates + README honesto (`cargo install --git`/`--path`, binários,
+Homebrew; **sem** crates.io no v1.0.0, ADR-0011); **atribuição CC-BY do OpenBible**
+no rodapé do `biblia xref` (exigida pela licença); CI valida `build --release
+--locked`; MSRV correta na doc (1.85); dedup do `reqwest` (xtask 0.12 → 0.13);
+fix de clippy `manual_repeat_n`; isolamento de `BIBLIA_SECRETS` no teste de xref.
+(Fórmula Homebrew mantém placeholders de sha256 — só calculáveis após a release;
+README já condiciona o tap a "quando publicado".) Suíte: 243 testes. (commit _pendente_)
 
 ## Fase 6 — Conectores de versões protegidas
 
