@@ -13,7 +13,7 @@ pub mod study;
 
 pub use keys::KeyStore;
 pub use providers::{build_provider, estimate_cost_usd};
-pub use study::{ask, study, StudyRequest, StudyResult};
+pub use study::{ask, numbered_passage, study, StudyRequest, StudyResult};
 
 use std::str::FromStr;
 

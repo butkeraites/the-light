@@ -47,7 +47,11 @@ pub struct StudyResult {
 }
 
 /// Texto da passagem numerado por versículo (uma linha por versículo).
-fn numbered_passage(passage: &Passage) -> String {
+///
+/// Sempre vem do acervo local (anti-alucinação). O `unwrap_or(0)` é uma guarda
+/// defensiva: na prática os versículos de uma `Passage` carregam sempre um
+/// número (`VerseRange::Single`).
+pub fn numbered_passage(passage: &Passage) -> String {
     passage
         .verses
         .iter()

@@ -90,25 +90,66 @@ pub fn resolve_passage(
     }
 }
 
-/// Rótulos de referências cruzadas locais para o primeiro versículo (RAG leve).
-pub fn xref_labels(store: &Store, reference: &Reference, lang: Lang, limit: usize) -> Vec<String> {
-    let verse = match reference.verses {
-        VerseRange::Single(v) => v,
-        VerseRange::Range { start, .. } => start,
-        VerseRange::WholeChapter => 1,
+/// Rótulos de referências cruzadas locais agregados por **toda a passagem**
+/// (RAG leve). Cobre o caso de capítulo inteiro (não só o v.1): consulta cada
+/// versículo presente, deduplica por referência (maior nº de votos), ordena por
+/// votos e limita o total. Melhor esforço — ignora erros de consulta.
+pub fn xref_labels(
+    store: &Store,
+    reference: &Reference,
+    passage: &Passage,
+    lang: Lang,
+    limit: usize,
+) -> Vec<String> {
+    use std::collections::HashMap;
+
+    let verses: Vec<u16> = passage
+        .verses
+        .iter()
+        .filter_map(|v| match v.reference.verses {
+            VerseRange::Single(n) => Some(n),
+            VerseRange::Range { start, .. } => Some(start),
+            VerseRange::WholeChapter => None,
+        })
+        .collect();
+    // Salvaguarda: se a passagem não trouxer números, usa o início da referência.
+    let verses = if verses.is_empty() {
+        vec![match reference.verses {
+            VerseRange::Single(v) => v,
+            VerseRange::Range { start, .. } => start,
+            VerseRange::WholeChapter => 1,
+        }]
+    } else {
+        verses
     };
-    xref::for_verse(
-        store.conn(),
-        reference.book,
-        reference.chapter,
-        verse,
-        xref::DEFAULT_MIN_VOTES,
-        limit,
-    )
-    .map(|hits| {
-        hits.iter()
-            .map(|h| format_reference(&h.reference, lang))
-            .collect()
-    })
-    .unwrap_or_default()
+
+    let per = limit.max(1);
+    let mut best: HashMap<Reference, i64> = HashMap::new();
+    for v in verses {
+        if let Ok(hits) = xref::for_verse(
+            store.conn(),
+            reference.book,
+            reference.chapter,
+            v,
+            xref::DEFAULT_MIN_VOTES,
+            per,
+        ) {
+            for h in hits {
+                best.entry(h.reference)
+                    .and_modify(|votes| *votes = (*votes).max(h.votes))
+                    .or_insert(h.votes);
+            }
+        }
+    }
+
+    let mut all: Vec<(Reference, i64)> = best.into_iter().collect();
+    all.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.book.cmp(&b.0.book))
+            .then_with(|| a.0.chapter.cmp(&b.0.chapter))
+    });
+    all.into_iter()
+        .take(limit)
+        .map(|(r, _)| format_reference(&r, lang))
+        .collect()
 }

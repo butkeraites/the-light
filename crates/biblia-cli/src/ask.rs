@@ -75,22 +75,25 @@ pub fn run(args: AskArgs) -> ExitCode {
                 Err(code) => return code,
             };
             let label = format_reference(&reference, lang);
-            let mut ctx = format!("{label}:\n");
-            for v in &passage.verses {
-                let n = match v.reference.verses {
-                    biblia_core::model::VerseRange::Single(n) => n,
-                    biblia_core::model::VerseRange::Range { start, .. } => start,
-                    biblia_core::model::VerseRange::WholeChapter => 0,
-                };
-                ctx.push_str(&format!("{n} {}\n", v.text));
-            }
-            let xrefs = ai_common::xref_labels(&store, &reference, lang, 8);
-            if !xrefs.is_empty() {
-                ctx.push_str(&format!("\nReferências relacionadas: {}", xrefs.join("; ")));
-            }
+            // Texto numerado do acervo local (mesma lógica do `study`).
+            let mut ctx = format!("{label}:\n{}\n", ai::numbered_passage(&passage));
+            // Marca explicitamente o contexto de xrefs, mesmo vazio (anti-alucinação).
+            let xrefs = ai_common::xref_labels(&store, &reference, &passage, lang, 8);
+            let related = if xrefs.is_empty() {
+                "(nenhuma)".to_string()
+            } else {
+                xrefs.join("; ")
+            };
+            ctx.push_str(&format!("\nReferências relacionadas: {related}"));
             ctx
         }
-        None => "(nenhuma referência fornecida)".to_string(),
+        None => {
+            // `--db` só é usado com `--ref`; avisa se foi passado em vão.
+            if args.db.is_some() {
+                eprintln!("Aviso: `--db` é ignorado sem `--ref` (nenhum contexto a carregar).");
+            }
+            "(nenhuma referência fornecida)".to_string()
+        }
     };
 
     let provider =

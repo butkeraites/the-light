@@ -16,6 +16,14 @@
 **Marco 5** (2026-06-16): estudo assistido por IA (BYOK), opt-in, anti-alucinação.
 Tag `v0.6.0`. Suíte: 218 testes, `clippy -D warnings` e `fmt` verdes.
 
+**Revisão adversarial pós-Marco 5** (2026-06-16): 14 achados → 10 confirmados →
+corrigidos: **(crítico)** providers checam o status HTTP antes de exigir JSON
+(erro de API legível, não "parse error"); xrefs do RAG agregam **toda a passagem**
+(não só o v.1); `study` multi-lente sinaliza falha parcial (saída ≠ 0 + aviso);
+`Secrets` com `Debug` que redige as chaves; `ask` reusa `numbered_passage` (sem
+braço morto) + marca xrefs vazios + avisa `--db` sem `--ref`; mensagens de
+"chave desconhecida" do `config` incluem `provider`. Suíte: 220 testes. (commit _pendente_)
+
 ## Fase 4 — Planos de leitura
 
 | Tarefa | Data | Resumo | Commit |

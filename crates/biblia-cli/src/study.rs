@@ -107,7 +107,7 @@ pub fn run(args: StudyArgs) -> ExitCode {
             Err(code) => return code,
         };
 
-    let cross_references = ai_common::xref_labels(&store, &reference, lang, 8);
+    let cross_references = ai_common::xref_labels(&store, &reference, &passage, lang, 8);
 
     let provider =
         match ai_common::resolve_provider(args.provider.clone(), args.model.clone(), &config) {
@@ -116,7 +116,10 @@ pub fn run(args: StudyArgs) -> ExitCode {
         };
 
     let label = format_reference(&reference, lang);
-    let mut exit = EXIT_OK;
+    let total = lenses.len();
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    let mut save_failed = false;
 
     for (i, lens) in lenses.iter().enumerate() {
         let req = StudyRequest {
@@ -135,20 +138,29 @@ pub fn run(args: StudyArgs) -> ExitCode {
                 }
                 print!("{}", result.to_markdown());
                 print_cost(provider.as_ref(), &result);
-                if args.save {
-                    if let Err(code) = save_study(&result) {
-                        exit = code;
-                    }
+                succeeded += 1;
+                if args.save && save_study(&result).is_err() {
+                    save_failed = true;
                 }
             }
             Err(e) => {
                 eprintln!("Falha no estudo ({}): {e}", lens.name_pt());
                 eprintln!("Dica: verifique a chave (`biblia config keys`) e a conexão.");
-                exit = EXIT_NOT_FOUND;
+                failed += 1;
             }
         }
     }
 
+    // Em comparação de lentes, deixa claro o resultado parcial; saída != 0 se algo
+    // falhou (convenção Unix), mesmo que parte tenha sido impressa.
+    if failed > 0 && succeeded > 0 {
+        eprintln!("Atenção: {failed} de {total} lentes falharam (as demais foram impressas).");
+    }
+    let exit = if failed > 0 || save_failed {
+        EXIT_NOT_FOUND
+    } else {
+        EXIT_OK
+    };
     ExitCode::from(exit)
 }
 

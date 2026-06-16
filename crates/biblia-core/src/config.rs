@@ -56,7 +56,7 @@ pub enum ConfigError {
     #[error("erro ao serializar config: {0}")]
     Serialize(#[from] toml::ser::Error),
     /// Chave de configuração desconhecida.
-    #[error("chave desconhecida: {0:?} (válidas: versions, language, theme, font-size)")]
+    #[error("chave desconhecida: {0:?} (válidas: versions, language, theme, font-size, provider)")]
     UnknownKey(String),
     /// Valor inválido para a chave.
     #[error("valor inválido para {key}: {value:?}")]

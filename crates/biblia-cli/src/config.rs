@@ -172,7 +172,8 @@ fn get(key: &str) -> ExitCode {
         }
         None => {
             eprintln!(
-                "Chave desconhecida: `{key}` (válidas: versions, language, theme, font-size)"
+                "Chave desconhecida: `{key}` \
+                 (válidas: versions, language, theme, font-size, provider)"
             );
             ExitCode::from(EXIT_USAGE)
         }

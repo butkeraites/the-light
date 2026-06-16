@@ -134,7 +134,23 @@ fn get_unknown_key_exits_usage() {
         .assert()
         .failure()
         .code(2)
-        .stderr(contains("Chave desconhecida"));
+        .stderr(contains("Chave desconhecida"))
+        .stderr(contains("provider")); // a lista de chaves válidas inclui provider
+}
+
+#[test]
+fn provider_is_a_valid_config_key() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("config.toml");
+    biblia(&cfg)
+        .args(["config", "set", "provider", "anthropic"])
+        .assert()
+        .success();
+    biblia(&cfg)
+        .args(["config", "get", "provider"])
+        .assert()
+        .success()
+        .stdout(contains("anthropic"));
 }
 
 #[test]

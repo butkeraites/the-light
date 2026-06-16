@@ -79,6 +79,27 @@ fn blocking_client() -> Result<reqwest::blocking::Client> {
         .map_err(|e| AiError::Http(e.to_string()))
 }
 
+/// Envia a requisição e lê o corpo verificando o **status HTTP antes** de exigir
+/// JSON válido — assim erros de API (não-2xx) viram um `AiError::Http` legível
+/// (mensagem da API ou corpo bruto), nunca um erro genérico de parsing.
+fn send_json(req: reqwest::blocking::RequestBuilder) -> Result<Value> {
+    let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
+    let status = resp.status();
+    let text = resp.text().map_err(|e| AiError::Http(e.to_string()))?;
+    parse_api_response(status.is_success(), status.as_str(), &text)
+}
+
+/// Núcleo puro de [`send_json`] (testável sem rede).
+fn parse_api_response(success: bool, status: &str, body: &str) -> Result<Value> {
+    if !success {
+        let msg = serde_json::from_str::<Value>(body)
+            .map(|v| api_error_msg(&v))
+            .unwrap_or_else(|_| body.trim().to_string());
+        return Err(AiError::Http(format!("HTTP {status}: {msg}")));
+    }
+    serde_json::from_str(body).map_err(|e| AiError::BadResponse(e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Anthropic
 // ---------------------------------------------------------------------------
@@ -132,23 +153,13 @@ impl LlmProvider for AnthropicProvider {
     }
     fn complete(&self, system: &str, user: &str) -> Result<String> {
         let body = anthropic_body(&self.model, system, user, DEFAULT_MAX_TOKENS);
-        let resp = blocking_client()?
+        let req = blocking_client()?
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &self.key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| AiError::Http(e.to_string()))?;
-        let status = resp.status();
-        let v: Value = resp.json().map_err(|e| AiError::Http(e.to_string()))?;
-        if !status.is_success() {
-            return Err(AiError::Http(format!(
-                "HTTP {status}: {}",
-                api_error_msg(&v)
-            )));
-        }
-        anthropic_extract(&v)
+            .json(&body);
+        anthropic_extract(&send_json(req)?)
     }
 }
 
@@ -193,22 +204,12 @@ impl LlmProvider for OpenAiProvider {
     }
     fn complete(&self, system: &str, user: &str) -> Result<String> {
         let body = openai_body(&self.model, system, user, DEFAULT_MAX_TOKENS);
-        let resp = blocking_client()?
+        let req = blocking_client()?
             .post("https://api.openai.com/v1/chat/completions")
             .header("authorization", format!("Bearer {}", self.key))
             .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| AiError::Http(e.to_string()))?;
-        let status = resp.status();
-        let v: Value = resp.json().map_err(|e| AiError::Http(e.to_string()))?;
-        if !status.is_success() {
-            return Err(AiError::Http(format!(
-                "HTTP {status}: {}",
-                api_error_msg(&v)
-            )));
-        }
-        openai_extract(&v)
+            .json(&body);
+        openai_extract(&send_json(req)?)
     }
 }
 
@@ -254,21 +255,11 @@ impl LlmProvider for OllamaProvider {
     fn complete(&self, system: &str, user: &str) -> Result<String> {
         let url = format!("{}/api/chat", self.host.trim_end_matches('/'));
         let body = ollama_body(&self.model, system, user);
-        let resp = blocking_client()?
+        let req = blocking_client()?
             .post(url)
             .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| AiError::Http(e.to_string()))?;
-        let status = resp.status();
-        let v: Value = resp.json().map_err(|e| AiError::Http(e.to_string()))?;
-        if !status.is_success() {
-            return Err(AiError::Http(format!(
-                "HTTP {status}: {}",
-                api_error_msg(&v)
-            )));
-        }
-        ollama_extract(&v)
+            .json(&body);
+        ollama_extract(&send_json(req)?)
     }
 }
 
@@ -366,6 +357,28 @@ mod tests {
         assert!((c - 30.0).abs() < 1e-6);
         assert_eq!(estimate_cost_usd("llama3", 1000, 1000), Some(0.0));
         assert_eq!(estimate_cost_usd("modelo-desconhecido", 1, 1), None);
+    }
+
+    #[test]
+    fn parse_api_response_checks_status_before_json() {
+        // 2xx com JSON válido → Ok.
+        let ok = parse_api_response(true, "200", r#"{"a":1}"#).unwrap();
+        assert_eq!(ok["a"], 1);
+        // não-2xx com JSON de erro → mensagem da API (não erro de parsing).
+        let e = parse_api_response(false, "401", r#"{"error":{"message":"invalid x-api-key"}}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("401") && e.contains("invalid x-api-key"), "{e}");
+        // não-2xx com corpo NÃO-JSON (ex.: HTML/texto) → usa o corpo bruto, não trava.
+        let e = parse_api_response(false, "502", "Bad Gateway")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("502") && e.contains("Bad Gateway"), "{e}");
+        // 2xx com corpo inválido → BadResponse (não Http).
+        assert!(matches!(
+            parse_api_response(true, "200", "not json"),
+            Err(AiError::BadResponse(_))
+        ));
     }
 
     #[test]

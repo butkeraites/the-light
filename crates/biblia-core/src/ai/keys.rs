@@ -14,10 +14,22 @@ use serde::{Deserialize, Serialize};
 
 use super::{AiError, Result};
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct Secrets {
     #[serde(default)]
     keys: BTreeMap<String, String>,
+}
+
+// `Debug` redige os valores: nunca exponha chaves, mesmo via `dbg!`/panic.
+impl std::fmt::Debug for Secrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Secrets")
+            .field(
+                "keys",
+                &format!("<{} chave(s) redigida(s)>", self.keys.len()),
+            )
+            .finish()
+    }
 }
 
 /// Cofre de chaves ligado a um arquivo `secrets.toml`.
