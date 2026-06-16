@@ -95,6 +95,8 @@ pub struct App {
     pub notes: Vec<Note>,
     /// Preferências (tema etc.).
     pub config: Config,
+    /// Overlay de ajuda (atalhos) visível.
+    pub show_help: bool,
     /// Sai do loop quando `true`.
     pub should_quit: bool,
 }
@@ -138,6 +140,7 @@ impl App {
             highlights: Vec::new(),
             notes: Vec::new(),
             config: Config::default(),
+            show_help: false,
             should_quit: false,
         };
         app.reload()?;
@@ -408,6 +411,16 @@ impl App {
 
     /// Processa uma tecla pressionada.
     pub fn handle_key(&mut self, key: KeyEvent) {
+        // O overlay de ajuda captura o teclado: fecha com ?/Esc/q, ignora o resto.
+        if self.show_help {
+            if matches!(
+                key.code,
+                KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')
+            ) {
+                self.show_help = false;
+            }
+            return;
+        }
         if self.input.is_some() {
             self.handle_input_key(key);
             return;
@@ -417,6 +430,7 @@ impl App {
             return;
         }
         match key.code {
+            KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Tab => {
                 self.focus = match self.focus {
@@ -760,5 +774,101 @@ mod tests {
         assert_eq!(app.config.theme, "auto");
         app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(app.theme(), "light");
+    }
+
+    #[test]
+    fn core_keybindings_still_work() {
+        let mut app = seeded_app();
+        // go_to focou o Reader em Rm 3.23 (cap 3).
+        assert_eq!(app.focus, Focus::Reader);
+        // n / p trocam capítulo (incrementa/decrementa em 1).
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.chapter, 4);
+        app.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(app.chapter, 3);
+        // ↓/↑ movem o cursor de versículo.
+        let v0 = app.selected;
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.selected, v0 + 1);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.selected, v0);
+        // ← volta o foco para Livros; Tab alterna.
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.focus, Focus::Books);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Reader);
+        // / abre busca, Esc fecha.
+        app.handle_key(key(KeyCode::Char('/')));
+        assert!(app.input.is_some());
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.input.is_none());
+        // ? abre a ajuda; q encerra.
+        app.handle_key(key(KeyCode::Char('?')));
+        assert!(app.show_help);
+        app.handle_key(key(KeyCode::Char('?')));
+        assert!(!app.show_help);
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn help_overlay_swallows_navigation_keys() {
+        let mut app = seeded_app();
+        let (ch, sel) = (app.chapter, app.selected);
+        app.handle_key(key(KeyCode::Char('?')));
+        // Teclas de navegação não têm efeito enquanto a ajuda está aberta.
+        for k in [
+            KeyCode::Char('n'),
+            KeyCode::Down,
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+        ] {
+            app.handle_key(key(k));
+        }
+        assert!(app.show_help);
+        assert_eq!(app.chapter, ch);
+        assert_eq!(app.selected, sel);
+        assert!(!app.should_quit);
+        // Esc fecha a ajuda (sem encerrar a app).
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.show_help);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn search_results_navigate_with_arrows() {
+        let mut app = seeded_app();
+        // Índice FTS para os dois versículos que começam com "For" (ids 1 e 3).
+        {
+            let conn = app.store.conn();
+            for (id, txt) in [
+                (1i64, "For all have sinned"),
+                (3, "For the wages of sin is death"),
+            ] {
+                conn.execute(
+                    "INSERT INTO verses_fts(text, translation_id, verse_id) VALUES (?1,'kjv',?2)",
+                    params![txt, id],
+                )
+                .unwrap();
+            }
+        }
+        app.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut app, "for"); // casa 2 versículos (Rm 3:23 e 6:23)
+        assert!(app.search_results.len() >= 2, "esperava ≥2 resultados");
+        assert_eq!(app.search_selected, 0);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.search_selected, 1);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.search_selected, 0);
+    }
+
+    #[test]
+    fn xref_nav_closes_with_q() {
+        let mut app = seeded_app();
+        app.handle_key(key(KeyCode::Char('x')));
+        assert!(app.xref_nav.is_some());
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(app.xref_nav.is_none());
+        assert!(!app.should_quit, "q deve só fechar a lista, não encerrar");
     }
 }

@@ -5,6 +5,7 @@
 
 mod app;
 mod terminal;
+mod theme;
 mod ui;
 
 pub use app::{App, Focus};
