@@ -83,6 +83,46 @@ fn start_today_status_mark_reset_flow() {
 }
 
 #[test]
+fn start_does_not_silently_overwrite_active_plan() {
+    let dir = TempDir::new().unwrap();
+    biblia(dir.path())
+        .args(["plan", "start", "annual", "--date", "2026-01-01"])
+        .assert()
+        .success();
+    // Sem --force: recusa sobrescrever.
+    biblia(dir.path())
+        .args(["plan", "start", "nt", "--date", "2026-02-01"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(contains("Já existe um plano ativo"));
+    // Com --force: sobrescreve.
+    biblia(dir.path())
+        .args(["plan", "start", "nt", "--date", "2026-02-01", "--force"])
+        .assert()
+        .success()
+        .stdout(contains("Novo Testamento"));
+}
+
+#[test]
+fn status_clamps_corrupted_completed() {
+    let dir = TempDir::new().unwrap();
+    let active = dir.path().join("reading-plans").join("active.json");
+    std::fs::create_dir_all(active.parent().unwrap()).unwrap();
+    // active.json editado à mão com completed absurdo.
+    std::fs::write(
+        &active,
+        r#"{"plan_id":"gospels","start_date":"2026-01-01","completed":9999}"#,
+    )
+    .unwrap();
+    biblia(dir.path())
+        .args(["plan", "status", "--date", "2026-01-05"])
+        .assert()
+        .success()
+        .stdout(contains("Concluídos: 30/30 (100%)")); // clamp a 30, não 9999
+}
+
+#[test]
 fn start_unknown_plan_is_usage_error() {
     let dir = TempDir::new().unwrap();
     biblia(dir.path())

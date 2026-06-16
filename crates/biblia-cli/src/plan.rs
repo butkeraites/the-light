@@ -33,6 +33,9 @@ enum PlanAction {
         /// Data de início (YYYY-MM-DD); padrão: hoje.
         #[arg(long)]
         date: Option<String>,
+        /// Sobrescreve um plano ativo sem perguntar.
+        #[arg(long)]
+        force: bool,
     },
     /// Mostra a leitura do dia.
     Today {
@@ -66,7 +69,12 @@ const EXIT_USAGE: u8 = 2;
 pub fn run(args: PlanArgs) -> ExitCode {
     match args.action {
         PlanAction::List => list(),
-        PlanAction::Start { plan, year, date } => start(&plan, year, date.as_deref()),
+        PlanAction::Start {
+            plan,
+            year,
+            date,
+            force,
+        } => start(&plan, year, date.as_deref(), force),
         PlanAction::Today { date } => today(date.as_deref()),
         PlanAction::Status { date } => status(date.as_deref()),
         PlanAction::Mark => mark(),
@@ -140,7 +148,7 @@ fn list() -> ExitCode {
     ExitCode::from(EXIT_OK)
 }
 
-fn start(plan_id: &str, year: Option<i32>, date: Option<&str>) -> ExitCode {
+fn start(plan_id: &str, year: Option<i32>, date: Option<&str>, force: bool) -> ExitCode {
     let Some(plan) = plan_by_id(plan_id) else {
         eprintln!(
             "Plano desconhecido: `{plan_id}`. Disponíveis: {}",
@@ -171,6 +179,16 @@ fn start(plan_id: &str, year: Option<i32>, date: Option<&str>) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
+    // Protege contra perda acidental de progresso.
+    if !force {
+        if let Ok(Some(existing)) = st.load() {
+            eprintln!(
+                "Já existe um plano ativo: {} (desde {}). Use --force para sobrescrever.",
+                existing.plan_id, existing.start_date
+            );
+            return ExitCode::from(EXIT_USAGE);
+        }
+    }
     let progress = PlanProgress {
         plan_id: plan.id.to_string(),
         start_date,
@@ -219,20 +237,17 @@ fn status(date: Option<&str>) -> ExitCode {
         Err(c) => return c,
     };
     let day = progress.day_index_for(date, plan.len()) + 1;
+    // Clamp defensivo: protege contra active.json editado à mão (>100%).
+    let completed = progress.completed.min(plan.len() as u32);
     let pct = if plan.is_empty() {
         0.0
     } else {
-        progress.completed as f64 / plan.len() as f64 * 100.0
+        completed as f64 / plan.len() as f64 * 100.0
     };
     println!("Plano: {} ({})", plan.name, plan.id);
     println!("Início: {}", progress.start_date);
     println!("Hoje: dia {day}/{} (pela data)", plan.len());
-    println!(
-        "Concluídos: {}/{} ({:.0}%)",
-        progress.completed,
-        plan.len(),
-        pct
-    );
+    println!("Concluídos: {}/{} ({:.0}%)", completed, plan.len(), pct);
     ExitCode::from(EXIT_OK)
 }
 
@@ -271,12 +286,34 @@ fn reset() -> ExitCode {
     }
 }
 
-/// Escapa texto para um campo de iCalendar (RFC 5545).
+/// Escapa texto para um valor TEXT de iCalendar (RFC 5545 §3.3.11:
+/// barra invertida, ponto-e-vírgula, vírgula e quebra de linha; aspas NÃO).
 fn ics_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace(';', "\\;")
         .replace(',', "\\,")
         .replace('\n', "\\n")
+}
+
+/// Dobra uma linha de conteúdo conforme RFC 5545 §3.1 (máx. 75 octetos por
+/// linha física; continuação com CRLF + espaço), respeitando limites UTF-8.
+fn ics_fold(line: &str) -> String {
+    let mut out = String::new();
+    let mut octets = 0usize;
+    let mut first = true;
+    for ch in line.chars() {
+        let cl = ch.len_utf8();
+        // Continuações já têm 1 octeto (o espaço inicial); limite total 75.
+        if octets + cl > 75 {
+            out.push_str("\r\n ");
+            octets = 1;
+            first = false;
+        }
+        let _ = first;
+        out.push(ch);
+        octets += cl;
+    }
+    out
 }
 
 fn ics(output: Option<&Path>) -> ExitCode {
@@ -288,10 +325,14 @@ fn ics(output: Option<&Path>) -> ExitCode {
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
 
     let mut ics = String::new();
-    ics.push_str("BEGIN:VCALENDAR\r\n");
-    ics.push_str("VERSION:2.0\r\n");
-    ics.push_str("PRODID:-//Biblia CLI//Reading Plan//PT\r\n");
-    ics.push_str("CALSCALE:GREGORIAN\r\n");
+    let mut line = |content: &str| {
+        ics.push_str(&ics_fold(content));
+        ics.push_str("\r\n");
+    };
+    line("BEGIN:VCALENDAR");
+    line("VERSION:2.0");
+    line("PRODID:-//Biblia CLI//Reading Plan//PT");
+    line("CALSCALE:GREGORIAN");
     for (i, _) in plan.days.iter().enumerate() {
         let day_date = progress.start_date + Duration::days(i as i64);
         let next = day_date + Duration::days(1);
@@ -301,16 +342,13 @@ fn ics(output: Option<&Path>) -> ExitCode {
             plan.len(),
             format_readings(&plan, i, lang)
         ));
-        ics.push_str("BEGIN:VEVENT\r\n");
-        ics.push_str(&format!("UID:biblia-{}-{}@biblia-cli\r\n", plan.id, i + 1));
-        ics.push_str(&format!("DTSTAMP:{stamp}\r\n"));
-        ics.push_str(&format!(
-            "DTSTART;VALUE=DATE:{}\r\n",
-            day_date.format("%Y%m%d")
-        ));
-        ics.push_str(&format!("DTEND;VALUE=DATE:{}\r\n", next.format("%Y%m%d")));
-        ics.push_str(&format!("SUMMARY:{summary}\r\n"));
-        ics.push_str("END:VEVENT\r\n");
+        line("BEGIN:VEVENT");
+        line(&format!("UID:biblia-{}-{}@biblia-cli", plan.id, i + 1));
+        line(&format!("DTSTAMP:{stamp}"));
+        line(&format!("DTSTART;VALUE=DATE:{}", day_date.format("%Y%m%d")));
+        line(&format!("DTEND;VALUE=DATE:{}", next.format("%Y%m%d")));
+        line(&format!("SUMMARY:{summary}"));
+        line("END:VEVENT");
     }
     ics.push_str("END:VCALENDAR\r\n");
 

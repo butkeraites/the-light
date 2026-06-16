@@ -205,6 +205,17 @@ mod tests {
     }
 
     #[test]
+    fn chunk_more_days_than_items_is_safe() {
+        let items: Vec<Reference> = (1..=3).map(|c| Reference::whole_chapter(1, c)).collect();
+        let days = chunk(items, 5);
+        assert_eq!(days.len(), 5);
+        assert_eq!(
+            days.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![1, 1, 1, 0, 0]
+        );
+    }
+
+    #[test]
     fn day_index_tracks_date_and_clamps() {
         let p = PlanProgress {
             plan_id: "annual".into(),
