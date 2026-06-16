@@ -10,4 +10,5 @@
 | Setup | 2026-06-15 | Docs de governança (DATA_SOURCES/DECISIONS/PROGRESS) + git init | 6da176d |
 | T0.1 | 2026-06-15 | Scaffolding do workspace (3 crates + xtask), compila verde | 82e18ab |
 | T0.2 | 2026-06-15 | Modelo de domínio + parser de referências PT/EN (66 livros, 39 testes) | 872138c |
-| T0.3 | 2026-06-15 | Store SQLite + migração v1 + FTS5 validado (busca sem acento), 6 testes | _pendente_ |
+| T0.3 | 2026-06-15 | Store SQLite + migração v1 + FTS5 validado (busca sem acento), 6 testes | c680a3e |
+| T0.4 | 2026-06-15 | Importador (xtask): KJV 31.102 + Almeida 1911 31.101 versículos; idempotente; 5 testes | _pendente_ |
