@@ -12,7 +12,7 @@
 | T0.2 | 2026-06-15 | Modelo de domínio + parser de referências PT/EN (66 livros, 39 testes) | 872138c |
 | T0.3 | 2026-06-15 | Store SQLite + migração v1 + FTS5 validado (busca sem acento), 6 testes | c680a3e |
 | T0.4 | 2026-06-15 | Importador (xtask): KJV 31.102 + Almeida 1911 31.101 versículos; idempotente; 5 testes | 48fac31 |
-| T0.5 | 2026-06-15 | Camada de fontes (BibleSource/EmbeddedSource) + comando `read` (PT/EN, intervalo, capítulo); 6 testes de integração | _pendente_ |
+| T0.5 | 2026-06-15 | Camada de fontes (BibleSource/EmbeddedSource) + comando `read` (PT/EN, intervalo, capítulo); 6 testes de integração | 37ae833 |
 
 **Marco 0 alcançado** (2026-06-15): ler um versículo offline em PT e EN. Tag `v0.1.0`.
 Suíte: 62 testes + 1 doctest, `clippy -D warnings` e `fmt` verdes.
