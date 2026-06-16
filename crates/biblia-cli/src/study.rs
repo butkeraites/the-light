@@ -99,11 +99,19 @@ pub fn run(args: StudyArgs) -> ExitCode {
         Err(code) => return code,
     };
 
-    let passage =
+    let resolved =
         match ai_common::resolve_passage(&store, &config, &reference, args.version.as_deref()) {
             Ok(p) => p,
             Err(code) => return code,
         };
+    let passage = resolved.passage;
+    let protected = !resolved.embeddable;
+    if protected {
+        eprintln!(
+            "(Versão protegida via conector — uso pessoal; respeite os limites de citação. \
+             O texto será enviado ao provedor de IA escolhido e NÃO será salvo em disco.)"
+        );
+    }
 
     let cross_references = ai_common::xref_labels(&store, &reference, &passage, lang, 8);
 
@@ -137,8 +145,16 @@ pub fn run(args: StudyArgs) -> ExitCode {
                 print!("{}", result.to_markdown());
                 print_cost(provider.as_ref(), &result);
                 succeeded += 1;
-                if args.save && save_study(&result).is_err() {
-                    save_failed = true;
+                if args.save {
+                    if protected {
+                        // Nunca persistir texto protegido (efêmero — SPEC §5.2).
+                        eprintln!(
+                            "Não salvo: estudos de versões protegidas não são gravados \
+                             (texto efêmero). Use uma versão livre para salvar."
+                        );
+                    } else if save_study(&result).is_err() {
+                        save_failed = true;
+                    }
                 }
             }
             Err(e) => {

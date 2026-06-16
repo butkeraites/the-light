@@ -57,14 +57,24 @@ pub fn resolve_provider(
     })
 }
 
+/// Passagem resolvida + se a fonte é embarcável (versão livre) ou protegida.
+pub struct ResolvedPassage {
+    /// A passagem resolvida.
+    pub passage: Passage,
+    /// `false` quando veio de um conector (versão protegida).
+    pub embeddable: bool,
+}
+
 /// Resolve a passagem na versão pedida (CLI > config > kjv), consultando
 /// versões locais e conectores protegidos (ver [`crate::sources::resolve`]).
+/// Devolve também a embarcabilidade da fonte, para que o chamador avise/gate
+/// versões protegidas (texto efêmero, nunca persistido).
 pub fn resolve_passage(
     store: &Store,
     config: &Config,
     reference: &Reference,
     cli_version: Option<&str>,
-) -> Result<Passage, ExitCode> {
+) -> Result<ResolvedPassage, ExitCode> {
     let version = cli_version
         .map(str::to_string)
         .or_else(|| config.versions.first().cloned())
@@ -73,9 +83,13 @@ pub fn resolve_passage(
         eprintln!("{m}");
         ExitCode::from(EXIT_NOT_FOUND)
     })?;
+    let embeddable = source.is_embeddable();
     let tid = TranslationId::new(&version);
     match source.passage(reference, &tid) {
-        Ok(p) if !p.verses.is_empty() => Ok(p),
+        Ok(p) if !p.verses.is_empty() => Ok(ResolvedPassage {
+            passage: p,
+            embeddable,
+        }),
         Ok(_) => {
             eprintln!("Passagem sem texto na versão `{version}`.");
             Err(ExitCode::from(EXIT_NOT_FOUND))

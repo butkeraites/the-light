@@ -160,8 +160,9 @@ pub fn run(args: ReadArgs) -> ExitCode {
     }
 
     if columns.is_empty() {
-        // Todas as versões pedidas eram desconhecidas/erro.
-        return ExitCode::from(EXIT_USAGE);
+        // Todas as versões pedidas eram desconhecidas/sem texto: não é erro de
+        // uso (a referência foi válida), e sim "não encontrado" — ADR-0006.
+        return ExitCode::from(EXIT_NOT_FOUND);
     }
 
     let found_any = columns.iter().any(|c| !c.verses.is_empty());
@@ -176,12 +177,12 @@ pub fn run(args: ReadArgs) -> ExitCode {
         );
     }
 
-    if had_error {
-        ExitCode::from(EXIT_USAGE)
-    } else if found_any {
-        ExitCode::from(EXIT_OK)
-    } else {
+    // ADR-0006: 2 = referência inválida (já tratada no parse); versão
+    // desconhecida / sem texto / falha parcial = 1 (não-encontrado/runtime).
+    if had_error || !found_any {
         ExitCode::from(EXIT_NOT_FOUND)
+    } else {
+        ExitCode::from(EXIT_OK)
     }
 }
 

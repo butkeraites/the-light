@@ -39,17 +39,17 @@ fn text_query(q: &str) -> [(&'static str, &str); 6] {
     ]
 }
 
-/// Extrai o texto de `passages[0]`.
+/// Extrai o texto de `passages[0]` (vazio = referência válida sem texto).
+///
+/// `Err` apenas quando a resposta é malformada (sem `passages[0]`); uma string
+/// vazia é devolvida como `Ok("")` para o chamador tratar como passagem vazia,
+/// igual ao `ApiBibleSource` e ao contrato de [`super::BibleSource::passage`].
 pub fn parse_passages(v: &Value) -> Result<String> {
     let p = v
         .pointer("/passages/0")
         .and_then(Value::as_str)
         .ok_or_else(|| SourceError::Http("resposta sem `passages[0]`".into()))?;
-    let t = p.trim().to_string();
-    if t.is_empty() {
-        return Err(SourceError::Http("passagem vazia".into()));
-    }
-    Ok(t)
+    Ok(p.trim().to_string())
 }
 
 /// Fonte ESV API (uma única tradução protegida).
@@ -86,6 +86,12 @@ impl BibleSource for EsvApiSource {
         let auth = format!("Token {}", self.key);
         let json = http::get_json(BASE, &[("authorization", &auth)], &text_query(&q))?;
         let content = parse_passages(&json)?;
+        if content.is_empty() {
+            return Ok(Passage {
+                reference: *r,
+                verses: vec![],
+            });
+        }
         let start = r.verses.start().unwrap_or(1);
         Ok(Passage {
             reference: *r,
@@ -157,8 +163,13 @@ mod tests {
             parse_passages(&v).unwrap(),
             "[16] For God so loved... (ESV)"
         );
+        // `passages` ausente/sem índice 0 = malformado → erro.
         assert!(parse_passages(&serde_json::json!({ "passages": [] })).is_err());
-        assert!(parse_passages(&serde_json::json!({ "passages": [""] })).is_err());
+        // String vazia = referência válida sem texto → Ok("") (passagem vazia).
+        assert_eq!(
+            parse_passages(&serde_json::json!({ "passages": [""] })).unwrap(),
+            ""
+        );
     }
 
     #[test]

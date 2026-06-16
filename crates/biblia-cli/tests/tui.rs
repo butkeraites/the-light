@@ -14,6 +14,10 @@ fn biblia() -> Command {
         "BIBLIA_CONFIG",
         std::env::temp_dir().join("biblia_absent_config.toml"),
     );
+    cmd.env(
+        "BIBLIA_SECRETS",
+        std::env::temp_dir().join("biblia_absent_secrets.toml"),
+    );
     cmd
 }
 

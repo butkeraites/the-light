@@ -63,7 +63,7 @@ pub fn run(args: AskArgs) -> ExitCode {
                 Ok(s) => s,
                 Err(code) => return code,
             };
-            let passage = match ai_common::resolve_passage(
+            let resolved = match ai_common::resolve_passage(
                 &store,
                 &config,
                 &reference,
@@ -72,6 +72,13 @@ pub fn run(args: AskArgs) -> ExitCode {
                 Ok(p) => p,
                 Err(code) => return code,
             };
+            if !resolved.embeddable {
+                eprintln!(
+                    "(Versão protegida via conector — uso pessoal; o texto será enviado \
+                     ao provedor de IA escolhido.)"
+                );
+            }
+            let passage = resolved.passage;
             let label = format_reference(&reference, lang);
             // Texto numerado do acervo local (mesma lógica do `study`).
             let mut ctx = format!("{label}:\n{}\n", ai::numbered_passage(&passage));

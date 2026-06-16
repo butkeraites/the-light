@@ -66,6 +66,10 @@ fn biblia() -> Command {
         "BIBLIA_DATA_DIR",
         std::env::temp_dir().join("biblia_absent_data_dir"),
     );
+    cmd.env(
+        "BIBLIA_SECRETS",
+        std::env::temp_dir().join("biblia_absent_secrets.toml"),
+    );
     cmd
 }
 
@@ -119,27 +123,28 @@ fn invalid_reference_exits_with_usage_code() {
 }
 
 #[test]
-fn unknown_version_exits_usage() {
+fn unknown_version_exits_not_found() {
+    // ADR-0006: versão desconhecida = "não encontrado" (1), não erro de uso (2).
     let (_dir, path) = seeded_db();
     biblia()
         .args(["read", "John 3:16", "--version", "zzz", "--db"])
         .arg(&path)
         .assert()
         .failure()
-        .code(2)
+        .code(1)
         .stderr(contains("versão desconhecida"));
 }
 
 #[test]
-fn mixed_known_and_unknown_version_exits_usage() {
+fn mixed_known_and_unknown_version_exits_not_found() {
     let (_dir, path) = seeded_db();
-    // kjv imprime, mas a versão inexistente faz o código de saída ser !=0.
+    // kjv imprime, mas a versão inexistente faz o código de saída ser 1 (falha parcial).
     biblia()
         .args(["read", "John 3:16", "--version", "kjv,nonexistent", "--db"])
         .arg(&path)
         .assert()
         .failure()
-        .code(2)
+        .code(1)
         .stdout(contains("For God so loved the world"))
         .stderr(contains("versão desconhecida"));
 }

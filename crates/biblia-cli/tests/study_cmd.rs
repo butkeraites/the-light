@@ -214,3 +214,82 @@ fn ask_without_ref_still_runs_with_mock() {
         .assert()
         .success();
 }
+
+#[test]
+fn study_protected_version_without_key_fails_no_network() {
+    let (dir, db) = fixture();
+    // Conector configurado mas SEM chave → erro claro antes de qualquer rede.
+    biblia(dir.path())
+        .args([
+            "config",
+            "connector",
+            "add",
+            "esv",
+            "--kind",
+            "esv",
+            "--name",
+            "English Standard Version",
+            "--abbrev",
+            "ESV",
+            "--lang",
+            "en",
+        ])
+        .assert()
+        .success();
+    biblia(dir.path())
+        .args([
+            "study",
+            "John 3:16",
+            "--lens",
+            "batista",
+            "--provider",
+            "mock",
+            "--version",
+            "esv",
+            "--db",
+        ])
+        .arg(&db)
+        .assert()
+        .failure()
+        .stderr(contains("sem chave"));
+}
+
+#[test]
+fn ask_protected_version_without_key_fails_no_network() {
+    let (dir, db) = fixture();
+    biblia(dir.path())
+        .args([
+            "config",
+            "connector",
+            "add",
+            "ara",
+            "--kind",
+            "apibible",
+            "--bible-id",
+            "x",
+            "--name",
+            "ARA",
+            "--abbrev",
+            "ARA",
+            "--lang",
+            "pt",
+        ])
+        .assert()
+        .success();
+    biblia(dir.path())
+        .args([
+            "ask",
+            "O que é graça?",
+            "--ref",
+            "Rm 3",
+            "--provider",
+            "mock",
+            "--version",
+            "ara",
+            "--db",
+        ])
+        .arg(&db)
+        .assert()
+        .failure()
+        .stderr(contains("sem chave"));
+}

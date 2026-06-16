@@ -13,6 +13,14 @@
 **Marco 6** (2026-06-16): versões protegidas sob credencial do usuário (BYOK,
 nunca embarcadas/cacheadas). Tag `v0.7.0`. Suíte: ~236 testes, `clippy -D warnings` e `fmt` verdes.
 
+**Revisão adversarial pós-Marco 6** (2026-06-16): 23 achados → 15 confirmados (5 positivos) →
+corrigidos: **(crítico)** `study --save` não persiste mais texto de versão protegida
+(efêmero — SPEC §5.2); `study`/`ask` avisam ao usar conector (texto vai ao provedor de IA);
+`read` usa saída 1 (não 2) em versão desconhecida/falha parcial (ADR-0006); `EsvApiSource`
+devolve `Passage` vazia (não erro) em passagem sem texto, igual ao API.Bible; isolamento de
+`BIBLIA_SECRETS` nos testes de read/search/tui; testes de study/ask com versão protegida
+sem chave (sem rede). Suíte: 238 testes. (commit _pendente_)
+
 ## Fase 5 — Camada de IA (BYOK)
 
 | Tarefa | Data | Resumo | Commit |
