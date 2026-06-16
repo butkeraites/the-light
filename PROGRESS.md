@@ -22,7 +22,7 @@ no rodapé do `biblia xref` (exigida pela licença); CI valida `build --release
 --locked`; MSRV correta na doc (1.85); dedup do `reqwest` (xtask 0.12 → 0.13);
 fix de clippy `manual_repeat_n`; isolamento de `BIBLIA_SECRETS` no teste de xref.
 (Fórmula Homebrew mantém placeholders de sha256 — só calculáveis após a release;
-README já condiciona o tap a "quando publicado".) Suíte: 243 testes. (commit _pendente_)
+README já condiciona o tap a "quando publicado".) Suíte: 243 testes. (commit f1d4edb)
 
 ## Fase 6 — Conectores de versões protegidas
 
