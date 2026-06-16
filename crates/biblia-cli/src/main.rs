@@ -44,7 +44,7 @@ use std::process::ExitCode;
         biblia tui\n  \
         biblia study \"Ef 2.8-9\" --lens presbiteriana   # requer provedor + chave\n\n\
         Mais detalhes em cada subcomando: `biblia <comando> --help`.\n\
-        Documentação: https://github.com/rbritobut/biblia"
+        Documentação: https://github.com/butkeraites/the-light"
 )]
 struct Cli {
     #[command(subcommand)]

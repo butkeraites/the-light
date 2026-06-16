@@ -11,8 +11,8 @@ members = [
 version = "1.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/rbritobut/biblia"
-homepage = "https://github.com/rbritobut/biblia"
+repository = "https://github.com/butkeraites/the-light"
+homepage = "https://github.com/butkeraites/the-light"
 authors = ["Bíblia CLI contributors"]
 # MSRV real: o conector HTTP (reqwest 0.13) exige rustc 1.85 (ver ADR-0001).
 rust-version = "1.85"

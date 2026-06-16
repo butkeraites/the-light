@@ -12,14 +12,14 @@ e [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap.
 
 ```sh
 # Binário pré-compilado (recomendado) — baixe o da sua plataforma em:
-#   https://github.com/rbritobut/biblia/releases
+#   https://github.com/butkeraites/the-light/releases
 # (cada arquivo vem com um `.sha256` para conferência).
 
 # Ou Homebrew (macOS/Linux), quando o tap estiver publicado:
-brew install rbritobut/tap/biblia
+brew install butkeraites/tap/biblia
 
 # Ou compilando com cargo, direto do repositório (instala o binário `biblia`):
-cargo install --git https://github.com/rbritobut/biblia biblia-cli
+cargo install --git https://github.com/butkeraites/the-light biblia-cli
 
 # Ou de um clone local:
 cargo install --path crates/biblia-cli
