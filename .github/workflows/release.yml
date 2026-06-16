@@ -44,18 +44,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build (release)
-        run: cargo build --release --locked -p biblia-cli --target ${{ matrix.target }}
+        run: cargo build --release --locked -p the-light-cli --target ${{ matrix.target }}
 
-      # Empacota o binário `biblia` (+ licenças e README) num tar.gz/zip.
+      # Empacota o binário `light` (+ licenças e README) num tar.gz/zip.
       - name: Package (Unix)
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           set -euo pipefail
-          name="biblia-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="the-light-${GITHUB_REF_NAME}-${{ matrix.target }}"
           staging="$name"
           mkdir "$staging"
-          cp "target/${{ matrix.target }}/release/biblia" "$staging/"
+          cp "target/${{ matrix.target }}/release/light" "$staging/"
           cp README.md LICENSE-MIT LICENSE-APACHE "$staging/"
           tar czf "$name.tar.gz" "$staging"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
@@ -65,9 +65,9 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $name = "biblia-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $name = "the-light-$env:GITHUB_REF_NAME-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $name | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/biblia.exe" $name
+          Copy-Item "target/${{ matrix.target }}/release/light.exe" $name
           Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File "$name.zip.sha256" -Encoding ascii

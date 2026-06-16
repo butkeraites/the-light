@@ -8,9 +8,9 @@ publish = false
 
 [dependencies]
 anyhow = "1.0.102"
-biblia-core = { path = "../crates/biblia-core" }
+the-light-core = { path = "../crates/the-light-core" }
 indicatif = "0.18.4"
-# Mesma major do biblia-core (0.13, TLS rustls via default-tls) para dedup do lock.
+# Mesma major do the-light-core (0.13, TLS rustls via default-tls) para dedup do lock.
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "default-tls"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }

@@ -35,7 +35,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
 
 fn print_help() {
     println!(
-        "xtask — tarefas de build/import da Bíblia CLI\n\n\
+        "xtask — tarefas de build/import da The Light\n\n\
          USO:\n  cargo run -p xtask -- <comando>\n\n\
          COMANDOS:\n  \
          import --version <ids>   Importa versões livres para o banco\n  \

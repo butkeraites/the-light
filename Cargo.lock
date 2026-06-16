@@ -138,49 +138,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "biblia-cli"
-version = "1.0.0"
-dependencies = [
- "assert_cmd",
- "biblia-core",
- "biblia-tui",
- "chrono",
- "clap",
- "predicates",
- "pulldown-cmark",
- "rusqlite",
- "shlex",
- "tempfile",
- "terminal_size",
-]
-
-[[package]]
-name = "biblia-core"
-version = "1.0.0"
-dependencies = [
- "chrono",
- "directories",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "biblia-tui"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "biblia-core",
- "ratatui",
- "rusqlite",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2020,6 +1977,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
+name = "the-light-cli"
+version = "1.0.0"
+dependencies = [
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "predicates",
+ "pulldown-cmark",
+ "rusqlite",
+ "shlex",
+ "tempfile",
+ "terminal_size",
+ "the-light-core",
+ "the-light-tui",
+]
+
+[[package]]
+name = "the-light-core"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "directories",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "the-light-tui"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "ratatui",
+ "rusqlite",
+ "the-light-core",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2813,12 +2813,12 @@ name = "xtask"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "biblia-core",
  "indicatif",
  "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
+ "the-light-core",
 ]
 
 [[package]]

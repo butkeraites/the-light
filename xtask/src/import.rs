@@ -9,13 +9,13 @@
 //!   sobre o banco gerado.
 
 use anyhow::{anyhow, bail, Context, Result};
-use biblia_core::model::Lang;
-use biblia_core::reference::BOOKS;
-use biblia_core::store::Store;
 use indicatif::{ProgressBar, ProgressStyle};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use std::path::PathBuf;
+use the_light_core::model::Lang;
+use the_light_core::reference::BOOKS;
+use the_light_core::store::Store;
 
 /// Formato bruto de um dataset suportado.
 #[derive(Debug, Clone, Copy)]
@@ -183,7 +183,7 @@ fn obtain_bytes(spec: &TranslationSpec, opts: &ImportOptions) -> Result<Vec<u8>>
 pub(crate) fn download(url: &str) -> Result<Vec<u8>> {
     println!("baixando {url} ...");
     let client = reqwest::blocking::Client::builder()
-        .user_agent("biblia-cli-importer")
+        .user_agent("the-light-cli-importer")
         .build()
         .context("criando cliente HTTP")?;
     let resp = client

@@ -1,4 +1,4 @@
-# DATA_SOURCES.md — Bíblia CLI (Phase 0)
+# DATA_SOURCES.md — The Light (Phase 0)
 
 > **Data de verificação de todas as fontes abaixo: 2026-06-15** (live-fetch + verificação de licença).
 > Cada entrada documenta: URL, formato, licença, decisão de embarque (embed / NÃO embarcar) e a justificativa.
@@ -114,4 +114,4 @@ efêmera (exibição/citação pessoal).
 | `apibible` | [API.Bible](https://scripture.api.bible) | `GET /v1/bibles/{bibleId}/passages/{passageId}` (USFM, ex.: `JHN.3.16`) | header `api-key` | `data.content` | Cobre ARA/NVI/etc. conforme o `bibleId` da conta do usuário. Texto puro (sem números/títulos/notas). |
 | `esv` | [ESV API (Crossway)](https://api.esv.org) | `GET /v3/passage/text/?q=<ref>` | header `Authorization: Token <key>` | `passages[0]` | Mantemos `include-short-copyright=true` para preservar a atribuição "(ESV)" exigida; limite de citação ~500 versículos/≤25% da obra é responsabilidade do usuário. |
 
-**Configuração (BYOK):** `biblia config connector add <slug> --kind <apibible|esv> [--bible-id <id>] --name "..." --abbrev <ABBR> --lang <pt|en>` mapeia um slug (ex.: `ara`) para a fonte; a chave vai no cofre `secrets.toml` (0600, fora do git) via `biblia config set-key <apibible|esv> <chave>`. Sem chave → indisponível com mensagem clara, **sem** chamada de rede. A busca full-text (`search`) é só local: conectores retornam `Unsupported`.
+**Configuração (BYOK):** `light config connector add <slug> --kind <apibible|esv> [--bible-id <id>] --name "..." --abbrev <ABBR> --lang <pt|en>` mapeia um slug (ex.: `ara`) para a fonte; a chave vai no cofre `secrets.toml` (0600, fora do git) via `light config set-key <apibible|esv> <chave>`. Sem chave → indisponível com mensagem clara, **sem** chamada de rede. A busca full-text (`search`) é só local: conectores retornam `Unsupported`.

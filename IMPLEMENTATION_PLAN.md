@@ -1,4 +1,4 @@
-# Bíblia CLI — Plano de Implementação (para execução pelo Claude Code)
+# The Light — Plano de Implementação (para execução pelo Claude Code)
 
 > **Como usar este documento:** este é um plano executável. O agente deve ler
 > primeiro o `SPEC.md` (visão e arquitetura) e depois executar as tarefas abaixo
@@ -28,7 +28,7 @@ Documento v0.1 · 2026-06-15
 ## 1. Estrutura-alvo do repositório
 
 ```
-biblia/
+the-light/
 ├── Cargo.toml                  # workspace
 ├── README.md
 ├── SPEC.md                     # já existe
@@ -38,7 +38,7 @@ biblia/
 ├── PROGRESS.md                 # log de execução
 ├── .gitignore
 ├── crates/
-│   ├── biblia-core/            # lógica pura, sem I/O de terminal
+│   ├── the-light-core/            # lógica pura, sem I/O de terminal
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── model.rs        # Reference, Passage, Verse, Translation...
@@ -64,9 +64,9 @@ biblia/
 │   │   │   │   └── ollama.rs
 │   │   │   └── config.rs       # config.toml + paths XDG
 │   │   └── tests/
-│   ├── biblia-cli/             # binário: clap + subcomandos
+│   ├── the-light-cli/             # binário: clap + subcomandos
 │   │   └── src/main.rs
-│   └── biblia-tui/             # binário/lib: ratatui
+│   └── the-light-tui/             # binário/lib: ratatui
 │       └── src/...
 ├── data/
 │   ├── importer/               # scripts/bin de import (one-off)
@@ -83,7 +83,7 @@ biblia/
 Fixar majors; deixar o `cargo` resolver minors. Confirmar versões mais recentes no momento da execução.
 
 ```toml
-# biblia-core
+# the-light-core
 clap        = { version = "4", features = ["derive"] }   # só em cli; core não depende
 rusqlite    = { version = "0.31", features = ["bundled"] } # SQLite embutido + FTS5
 serde       = { version = "1", features = ["derive"] }
@@ -99,7 +99,7 @@ regex       = "1"        # parser de referências
 reqwest     = { version = "0.12", features = ["json", "rustls-tls"] }
 tokio       = { version = "1", features = ["rt-multi-thread", "macros"] }
 
-# tui (biblia-tui)
+# tui (the-light-tui)
 ratatui     = "0.28"
 crossterm   = "0.28"
 
@@ -118,7 +118,7 @@ tempfile    = "3"
 
 ## 3. Modelo de dados (DDL de referência)
 
-Migrações em `crates/biblia-core/migrations/` aplicadas na abertura do banco
+Migrações em `crates/the-light-core/migrations/` aplicadas na abertura do banco
 (checar `PRAGMA user_version`).
 
 ```sql
@@ -240,12 +240,12 @@ Criar workspace com as 3 crates, `.gitignore`, `README.md` mínimo, CI local (`c
 **T0.2 — Modelo + parser de referências (`model.rs`, `reference.rs`)**
 Implementar tipos do §4 e parser que aceite PT/EN: `Jo 3.16`, `John 3:16`, `Gn 1.1-3`, `Sl 23`, `1Co 13.4-7`, listas. Tabela de aliases de livros (66 livros) em PT e EN.
 *Aceite:* testes cobrindo ≥20 formatos válidos e ≥8 inválidos.
-*Verificar:* `cargo test -p biblia-core reference`.
+*Verificar:* `cargo test -p the-light-core reference`.
 
 **T0.3 — Store SQLite + migrações (`store.rs`)**
 Abrir/criar DB em path XDG, aplicar migração v1 (§3), validar FTS5 disponível.
 *Aceite:* teste cria DB temporário, roda migração, confirma tabelas e FTS5.
-*Verificar:* `cargo test -p biblia-core store`.
+*Verificar:* `cargo test -p the-light-core store`.
 
 **T0.4 — Importador de uma versão livre PT e uma EN (`data/importer`, `xtask`)**
 Baixar/parsear datasets livres (ex.: BSB em EN, Almeida domínio público em PT), popular `translations/books/verses/verses_fts` com `license`/`embeddable` corretos. Idempotente.
@@ -253,7 +253,7 @@ Baixar/parsear datasets livres (ex.: BSB em EN, Almeida domínio público em PT)
 *Verificar:* `cargo run -p xtask -- import --version bsb,almeida-pd` e teste de smoke.
 
 **T0.5 — Comando `read` (CLI mínima)**
-`biblia read "John 3:16" --version kjv` imprime o versículo. Erros amigáveis.
+`light read "John 3:16" --version kjv` imprime o versículo. Erros amigáveis.
 *Aceite:* saída correta para passagem e intervalo; código de saída ≠0 em referência inválida.
 *Verificar:* teste de integração via `assert_cmd` ou execução manual documentada.
 
@@ -268,12 +268,12 @@ Baixar/parsear datasets livres (ex.: BSB em EN, Almeida domínio público em PT)
 *Aceite:* dois textos alinhados por versículo.
 
 **T1.2 — Busca full-text (`search.rs`)**
-`biblia search "graça" --version almeida-pd [--book Romanos] [--limit N]` via FTS5, com destaque do termo e ranqueamento.
+`light search "graça" --version almeida-pd [--book Romanos] [--limit N]` via FTS5, com destaque do termo e ranqueamento.
 *Aceite:* busca com e sem acento retorna resultados; filtro por livro funciona; teste com termos conhecidos.
-*Verificar:* `cargo test -p biblia-core search`.
+*Verificar:* `cargo test -p the-light-core search`.
 
 **T1.3 — Configuração (`config.toml`)**
-`biblia config set|get|list`: versões padrão, idioma, tema, tamanho de fonte. Paths XDG.
+`light config set|get|list`: versões padrão, idioma, tema, tamanho de fonte. Paths XDG.
 *Aceite:* round-trip de config persistido; defaults sensatos.
 
 **T1.4 — Tema/cores e formatação de saída**
@@ -287,19 +287,19 @@ Cores ANSI, destaque de número de versículo, modo `--plain` (sem cor, para pip
 ### FASE 2 — Estudo pessoal (offline)
 
 **T2.1 — Highlights (`userdata/highlights.rs`)**
-`biblia highlight "Jo 3.16" --color yellow --tag salvação`; listar/remover. Persistir em `highlights.json`. Mostrar marcações ao ler.
+`light highlight "Jo 3.16" --color yellow --tag salvação`; listar/remover. Persistir em `highlights.json`. Mostrar marcações ao ler.
 *Aceite:* highlight persiste e aparece na leitura; teste de round-trip.
 
 **T2.2 — Notas (`userdata/notes.rs`)**
-`biblia note add|edit|show|list` associadas a versículo/intervalo; uma `.md` por nota; abre `$EDITOR` quando sem texto inline.
+`light note add|edit|show|list` associadas a versículo/intervalo; uma `.md` por nota; abre `$EDITOR` quando sem texto inline.
 *Aceite:* nota criada, listada e exibida na leitura; render markdown.
 
 **T2.3 — Referências cruzadas (`xref.rs` + import TSK)**
-Importar TSK; `biblia xref "Rm 3.23"` lista versículos relacionados; navegação encadeada.
+Importar TSK; `light xref "Rm 3.23"` lista versículos relacionados; navegação encadeada.
 *Aceite:* xrefs conhecidas retornam; import idempotente; licença registrada em `DATA_SOURCES.md`.
 
 **T2.4 — Export**
-`biblia export notes|study --format md|pdf` (PDF via pipeline simples ou `--format md` + ferramenta externa documentada).
+`light export notes|study --format md|pdf` (PDF via pipeline simples ou `--format md` + ferramenta externa documentada).
 *Aceite:* arquivo gerado com conteúdo correto.
 
 **Marco 2:** estudo pessoal completo offline. Tag `v0.3.0`.
@@ -308,7 +308,7 @@ Importar TSK; `biblia xref "Rm 3.23"` lista versículos relacionados; navegaçã
 
 ### FASE 3 — TUI (ratatui)
 
-**T3.1 — Shell da TUI (`biblia-tui`)**
+**T3.1 — Shell da TUI (`the-light-tui`)**
 Loop de eventos `crossterm`, layout base (lista de livros/capítulos + viewport), navegação por teclado, sair com `q/Esc`.
 *Aceite:* abre, navega, fecha sem corromper terminal (restaura modo).
 
@@ -331,7 +331,7 @@ Barra de busca incremental; escolha de tema; ajuste de tamanho/espaçamento onde
 ### FASE 4 — Planos de leitura
 
 **T4.1 — Engine de planos (`userdata/plans.rs`)**
-Planos cronológico/anual/temático como JSON; `biblia plan start|today|status|reset`; progresso persistido.
+Planos cronológico/anual/temático como JSON; `light plan start|today|status|reset`; progresso persistido.
 *Aceite:* `plan today` mostra leitura do dia conforme data; progresso avança.
 
 **T4.2 — Lembretes/calendário (opcional)**
@@ -345,7 +345,7 @@ Export `.ics` ou integração com calendário do SO para a leitura diária.
 ### FASE 5 — Camada de IA (BYOK)
 
 **T5.1 — Abstração de provedor + gestão de keys (`ai/mod.rs`, `config.rs`)**
-Trait `LlmProvider`; `biblia config set-key <provider> <key>` em armazenamento seguro do SO (keychain quando possível; senão arquivo com permissão restrita, fora do git). Selecionar provedor ativo.
+Trait `LlmProvider`; `light config set-key <provider> <key>` em armazenamento seguro do SO (keychain quando possível; senão arquivo com permissão restrita, fora do git). Selecionar provedor ativo.
 *Aceite:* key gravada/lida sem aparecer em git; troca de provedor funciona.
 
 **T5.2 — Prompts de lente denominacional (`ai/prompts.rs`)**
@@ -353,11 +353,11 @@ System prompts versionados/editáveis por denominação (Batista, Presbiteriana,
 *Aceite:* prompts carregáveis; usuário pode sobrescrever via arquivo local.
 
 **T5.3 — Estudo exegético**
-`biblia study "Ef 2.8-9" --lens presbiteriana [--depth exegetical|wordstudy]`. Monta contexto (passagem + xrefs locais → RAG leve), chama provedor, salva em `studies/*.md`.
+`light study "Ef 2.8-9" --lens presbiteriana [--depth exegetical|wordstudy]`. Monta contexto (passagem + xrefs locais → RAG leve), chama provedor, salva em `studies/*.md`.
 *Aceite:* gera estudo citando a passagem; falha amigável sem key; offline → mensagem clara.
 
 **T5.4 — Comparar perspectivas + perguntas livres**
-`biblia study compare "Tg 2.24" --lens batista,luterana`; `biblia ask "..." --ref "Rm 3"`.
+`light study compare "Tg 2.24" --lens batista,luterana`; `light ask "..." --ref "Rm 3"`.
 *Aceite:* saída lado a lado; respostas ancoradas em referências fornecidas.
 
 **T5.5 — Provedores: OpenAI, Anthropic, Ollama**

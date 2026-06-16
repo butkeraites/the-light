@@ -1,6 +1,6 @@
 # Prompts editáveis (lentes denominacionais)
 
-O `biblia study` monta o *system prompt* a partir de uma **lente denominacional**
+O `light study` monta o *system prompt* a partir de uma **lente denominacional**
 (a tradição cuja perspectiva você quer) mais uma **profundidade**. Os prompts são
 embutidos no binário, mas totalmente **sobrescrevíveis** — esse é um dos pilares
 "hackeáveis" do projeto.
@@ -14,17 +14,17 @@ o *user prompt*).
 
 Diretório padrão:
 
-- **Linux:** `~/.config/biblia/prompts/`
-- **macOS:** `~/Library/Application Support/biblia/prompts/`
-- **Override:** defina `BIBLIA_PROMPTS=/caminho/para/prompts` para apontar para
+- **Linux:** `~/.config/light/prompts/`
+- **macOS:** `~/Library/Application Support/light/prompts/`
+- **Override:** defina `LIGHT_PROMPTS=/caminho/para/prompts` para apontar para
   outro diretório (útil para versionar seus prompts num repositório).
 
 Exemplo:
 
 ```sh
-mkdir -p ~/.config/biblia/prompts
-$EDITOR ~/.config/biblia/prompts/presbyterian.md
-biblia study "Ef 2.8-9" --lens presbiteriana   # usa o seu prompt
+mkdir -p ~/.config/light/prompts
+$EDITOR ~/.config/light/prompts/presbyterian.md
+light study "Ef 2.8-9" --lens presbiteriana   # usa o seu prompt
 ```
 
 ## Slugs das lentes
@@ -46,7 +46,7 @@ O estudo é desenhado para **reduzir alucinação** e ser honesto sobre a perspe
 Ao escrever um prompt próprio, mantenha as regras que sustentam isso:
 
 1. **Cite os versículos** por referência ao fundamentar afirmações.
-2. **Separe o texto bíblico citado da interpretação** — o `biblia` já imprime o
+2. **Separe o texto bíblico citado da interpretação** — o `light` já imprime o
    texto do acervo local numa seção própria; o modelo deve deixar claro o que é
    leitura interpretativa.
 3. **Marque a lente** — deixe explícito que é a leitura *daquela* tradição, não a
@@ -60,8 +60,8 @@ Profundidades disponíveis (flag `--depth`): `geral`, `exegetico`, `palavras`.
 A IA é **opt-in e BYOK**. Configure o provedor e a chave antes:
 
 ```sh
-biblia config set provider anthropic
-biblia config set-key anthropic <sua-chave>
+light config set provider anthropic
+light config set-key anthropic <sua-chave>
 ```
 
 A chave fica em `secrets.toml` (`0600`, fora do git) e nunca é logada. Para testar

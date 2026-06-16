@@ -15,8 +15,8 @@ MSRV do CI valida 1.85.
 
 ## ADR-0002 — Workspace com 3 crates + xtask · 2026-06-15
 **Contexto:** o plano (§1) pede separar lógica testável de CLI e TUI.
-**Decisão:** `crates/biblia-core` (lógica pura), `crates/biblia-cli` (binário `biblia`),
-`crates/biblia-tui` (Fase 3) e `xtask` (importadores one-off). `resolver = "2"`.
+**Decisão:** `crates/the-light-core` (lógica pura), `crates/the-light-cli` (binário `light`),
+`crates/the-light-tui` (Fase 3) e `xtask` (importadores one-off). `resolver = "2"`.
 **Consequência:** o núcleo não depende de `clap`/`ratatui`; testes de lógica isolados.
 
 ## ADR-0003 — Versões de dependências resolvidas pelo cargo · 2026-06-15
@@ -46,11 +46,11 @@ inválida (erro de parsing). `EmbeddedSource` implementa `BibleSource` lendo do 
 possível; senão arquivo restrito fora do git).
 **Decisão:** guardar as chaves num `secrets.toml` separado do `config.toml`, no
 diretório de config, com permissão `0600` (Unix) e no `.gitignore`. Caminho
-sobrescrevível por `BIBLIA_SECRETS` (testes). O provedor ativo (não-secreto) fica
+sobrescrevível por `LIGHT_SECRETS` (testes). O provedor ativo (não-secreto) fica
 no `config.toml`. Integração com keychain do SO fica como evolução futura —
 não é testável de forma determinística no ambiente atual e tocaria o keychain real.
 **Consequência:** chaves nunca no git, nunca ecoadas; testes determinísticos via
-`BIBLIA_SECRETS`. `KeyStore::list_providers` expõe só nomes, nunca valores.
+`LIGHT_SECRETS`. `KeyStore::list_providers` expõe só nomes, nunca valores.
 
 ## ADR-0008 — Anti-alucinação: texto citado vem do banco, não do LLM · 2026-06-16
 **Contexto:** risco de alucinação em temas teológicos (SPEC §9).
@@ -94,17 +94,17 @@ rede. Comparação `--bible-id` exigido para API.Bible; ESV não precisa.
 
 ## ADR-0011 — Distribuição do v1.0.0 sem crates.io · 2026-06-16
 **Contexto:** o plano pede `cargo install`, Homebrew e binários. Publicar no
-crates.io exige publicar também `biblia-core`/`biblia-tui` como pacotes públicos
+crates.io exige publicar também `the-light-core`/`the-light-tui` como pacotes públicos
 (contratos de API a manter) e lida mal com o fluxo de banco/dados; o nome do
-binário (`biblia`) difere do crate (`biblia-cli`).
+binário (`light`) difere do crate (`the-light-cli`).
 **Decisão:** no v1.0.0 a distribuição é por **binários pré-compilados** (GitHub
 Releases, multiplataforma + `.sha256`), **Homebrew** (tap) e **`cargo install
 --git`/`--path`**. Todas as crates do workspace são `publish = false` (evita
 publicação acidental). O `cargo install --git`/`--path` funciona mesmo com
 `publish = false` (só bloqueia `cargo publish`). Publicar no crates.io fica como
-evolução futura (os metadados de pacote já estão prontos no `biblia-cli`).
+evolução futura (os metadados de pacote já estão prontos no `the-light-cli`).
 **Consequência:** README documenta os caminhos que funcionam de fato; nenhum
-`cargo install biblia-cli` enganoso; sem etapa de `cargo publish` no release.
+`cargo install the-light-cli` enganoso; sem etapa de `cargo publish` no release.
 
 ## ADR-0004 — Licença do código `MIT OR Apache-2.0` · 2026-06-15
 **Contexto:** o SPEC sugere MIT ou Apache-2.0; convenção do ecossistema Rust é dupla.

@@ -1,0 +1,19 @@
+[package]
+name = "the-light-tui"
+description = "Interface de terminal (TUI) da The Light — fase 3."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+# v1.0.0 distribui binário + Homebrew + `cargo install --git`; não no crates.io (ADR-0011).
+publish = false
+
+[dependencies]
+anyhow = "1.0.102"
+the-light-core = { version = "1.0.0", path = "../the-light-core" }
+ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.40.1", features = ["bundled"] }

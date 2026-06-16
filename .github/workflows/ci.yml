@@ -64,4 +64,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo build --release --locked
-        run: cargo build --release --locked -p biblia-cli
+        run: cargo build --release --locked -p the-light-cli

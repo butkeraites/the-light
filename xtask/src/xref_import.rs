@@ -6,14 +6,14 @@
 //!
 //! Colunas: `From Verse` (OSIS `Gen.1.1`), `To Verse` (OSIS único ou intervalo
 //! `John.1.1-John.1.3`), `Votes` (inteiro, pode ser negativo). Os códigos OSIS
-//! são resolvidos por [`biblia_core::reference::book_number`].
+//! são resolvidos por [`the_light_core::reference::book_number`].
 
 use anyhow::{bail, Context, Result};
-use biblia_core::reference::book_number;
-use biblia_core::store::Store;
 use indicatif::{ProgressBar, ProgressStyle};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
+use the_light_core::reference::book_number;
+use the_light_core::store::Store;
 
 const XREF_URL: &str =
     "https://raw.githubusercontent.com/scrollmapper/bible_databases/master/sources/extras/cross_references.txt";

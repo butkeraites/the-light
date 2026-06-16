@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/biblia-core",
-    "crates/biblia-cli",
-    "crates/biblia-tui",
+    "crates/the-light-core",
+    "crates/the-light-cli",
+    "crates/the-light-tui",
     "xtask",
 ]
 
@@ -13,7 +13,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/butkeraites/the-light"
 homepage = "https://github.com/butkeraites/the-light"
-authors = ["Bíblia CLI contributors"]
+authors = ["The Light contributors"]
 # MSRV real: o conector HTTP (reqwest 0.13) exige rustc 1.85 (ver ADR-0001).
 rust-version = "1.85"
 

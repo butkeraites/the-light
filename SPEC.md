@@ -1,4 +1,4 @@
-# Bíblia CLI — Documento de Spec & Roadmap
+# The Light — Documento de Spec & Roadmap
 
 > Leitor de Bíblia hackeável para terminal, com estudo exegético assistido por IA
 > (lente denominacional configurável), dados locais e modelo *bring-your-own-key*.
@@ -159,11 +159,11 @@ Knowledge** (domínio público, ~340 mil cross-refs).
 **Dados do usuário (read-write, em arquivos):**
 
 ```
-~/.config/biblia/config.toml            # versões, fonte, tamanho, tema, perspectiva
-~/.local/share/biblia/notes/            # uma nota .md por versículo/intervalo
-~/.local/share/biblia/highlights.json   # {ref, cor, tag}
-~/.local/share/biblia/reading-plans/    # planos + progresso
-~/.local/share/biblia/studies/          # estudos de IA salvos (.md)
+~/.config/light/config.toml            # versões, fonte, tamanho, tema, perspectiva
+~/.local/share/light/notes/            # uma nota .md por versículo/intervalo
+~/.local/share/light/highlights.json   # {ref, cor, tag}
+~/.local/share/light/reading-plans/    # planos + progresso
+~/.local/share/light/studies/          # estudos de IA salvos (.md)
 ```
 
 Tudo em texto aberto → o usuário pode versionar a pasta inteira em git e
@@ -202,17 +202,17 @@ Tabela de aliases de livros por idioma.
 ### 6.3 Comandos (esboço de CLI)
 
 ```
-biblia read John 3:16 --version kjv,ara
-biblia search "graça" --version ara
-biblia highlight "Jo 3.16" --color yellow --tag salvação
-biblia note add "Sl 23.1" "O Senhor é o meu pastor..."
-biblia xref "Rm 3.23"
-biblia plan start chronological --year 2026
-biblia plan today
-biblia study "Ef 2.8-9" --lens presbiteriana      # requer key
-biblia study compare "Tg 2.24" --lens batista,luterana
-biblia config set font-size 16
-biblia tui                                          # abre a interface completa
+light read John 3:16 --version kjv,ara
+light search "graça" --version ara
+light highlight "Jo 3.16" --color yellow --tag salvação
+light note add "Sl 23.1" "O Senhor é o meu pastor..."
+light xref "Rm 3.23"
+light plan start chronological --year 2026
+light plan today
+light study "Ef 2.8-9" --lens presbiteriana      # requer key
+light study compare "Tg 2.24" --lens batista,luterana
+light config set font-size 16
+light tui                                          # abre a interface completa
 ```
 
 ---
@@ -220,8 +220,8 @@ biblia tui                                          # abre a interface completa
 ## 7. Distribuição e modelo de uso aberto
 
 - **Open source** (sugestão: licença MIT ou Apache-2.0 para o código; dados bíblicos sob suas próprias licenças).
-- **Instalação:** `cargo install biblia`, Homebrew, e binários pré-compilados (Linux/macOS/Windows) via GitHub Releases.
-- **Configuração de keys:** `biblia config set-key openai sk-...` grava em local seguro do SO; nunca commitada.
+- **Instalação:** `cargo install --git https://github.com/butkeraites/the-light the-light-cli`, Homebrew, e binários pré-compilados (Linux/macOS/Windows) via GitHub Releases.
+- **Configuração de keys:** `light config set-key openai sk-...` grava em local seguro do SO; nunca commitada.
 - **Sem backend obrigatório.** O projeto pode ser usado por qualquer pessoa que clone/instale e traga suas próprias fontes e chaves — exatamente o "uso aberto" desejado.
 
 ---
