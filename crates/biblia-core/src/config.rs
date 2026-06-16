@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::Lang;
 
 /// Chaves configuráveis (para `config set/get/list`).
-pub const KEYS: &[&str] = &["versions", "language", "theme", "font-size"];
+pub const KEYS: &[&str] = &["versions", "language", "theme", "font-size", "provider"];
 
 /// Preferências do usuário.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +26,9 @@ pub struct Config {
     pub theme: String,
     /// Tamanho de fonte (onde o terminal/TUI permitir).
     pub font_size: Option<u16>,
+    /// Provedor de IA ativo (`anthropic`/`openai`/`ollama`); vazio = nenhum.
+    /// Não é segredo; as chaves ficam fora do `config.toml` (ver `ai::KeyStore`).
+    pub provider: String,
 }
 
 impl Default for Config {
@@ -35,6 +38,7 @@ impl Default for Config {
             language: Lang::Pt,
             theme: "auto".to_string(),
             font_size: None,
+            provider: String::new(),
         }
     }
 }
@@ -156,6 +160,7 @@ impl Config {
                     })?);
                 }
             }
+            "provider" => self.provider = value.trim().to_ascii_lowercase(),
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
         Ok(())
@@ -172,6 +177,7 @@ impl Config {
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "none".to_string()),
             ),
+            "provider" => Some(self.provider.clone()),
             _ => None,
         }
     }

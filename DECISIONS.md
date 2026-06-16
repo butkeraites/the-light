@@ -39,6 +39,26 @@ já dobra acentos nos dois lados (índice e query). Sem coluna extra nem dep de
 inválida (erro de parsing). `EmbeddedSource` implementa `BibleSource` lendo do SQLite.
 **Consequência:** scripts podem distinguir os casos; testado via `assert_cmd`.
 
+## ADR-0007 — Chaves de IA em `secrets.toml` (0600), não no keychain · 2026-06-16
+**Contexto:** o SPEC pede armazenamento seguro das chaves BYOK (keychain quando
+possível; senão arquivo restrito fora do git).
+**Decisão:** guardar as chaves num `secrets.toml` separado do `config.toml`, no
+diretório de config, com permissão `0600` (Unix) e no `.gitignore`. Caminho
+sobrescrevível por `BIBLIA_SECRETS` (testes). O provedor ativo (não-secreto) fica
+no `config.toml`. Integração com keychain do SO fica como evolução futura —
+não é testável de forma determinística no ambiente atual e tocaria o keychain real.
+**Consequência:** chaves nunca no git, nunca ecoadas; testes determinísticos via
+`BIBLIA_SECRETS`. `KeyStore::list_providers` expõe só nomes, nunca valores.
+
+## ADR-0008 — Anti-alucinação: texto citado vem do banco, não do LLM · 2026-06-16
+**Contexto:** risco de alucinação em temas teológicos (SPEC §9).
+**Decisão:** o `StudyResult` separa **texto citado** (extraído do banco local,
+exato) de **interpretação** (saída do LLM). O prompt recebe a passagem e os
+xrefs locais (RAG leve) e instrui a citar versículos e separar texto de
+interpretação, sinalizando divergências entre tradições.
+**Consequência:** a citação é sempre fiel; a lente é explícita; testes usam
+`MockLlmProvider` (sem rede), provedores reais só em teste manual documentado.
+
 ## ADR-0004 — Licença do código `MIT OR Apache-2.0` · 2026-06-15
 **Contexto:** o SPEC sugere MIT ou Apache-2.0; convenção do ecossistema Rust é dupla.
 **Decisão:** `MIT OR Apache-2.0` para o código. Dados bíblicos seguem suas próprias

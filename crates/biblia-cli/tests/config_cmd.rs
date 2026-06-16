@@ -1,13 +1,17 @@
 //! Testes de integração do comando `biblia config` (via `BIBLIA_CONFIG`).
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::TempDir;
 
-/// Comando `biblia` com `BIBLIA_CONFIG` apontando para um arquivo temporário.
+/// Comando `biblia` com `BIBLIA_CONFIG`/`BIBLIA_SECRETS` em arquivos temporários
+/// no mesmo diretório do `cfg`.
 fn biblia(cfg: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("biblia").unwrap();
     cmd.env("BIBLIA_CONFIG", cfg);
+    let secrets = cfg.parent().unwrap().join("secrets.toml");
+    cmd.env("BIBLIA_SECRETS", secrets);
     cmd
 }
 
@@ -44,6 +48,57 @@ fn list_shows_defaults_and_path() {
         .stdout(contains("language = pt"))
         .stdout(contains("theme = auto"))
         .stdout(contains("font-size = none"));
+}
+
+#[test]
+fn set_key_persists_without_leaking_value() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("config.toml");
+
+    let out = biblia(&cfg)
+        .args(["config", "set-key", "anthropic", "sk-ant-secret-123"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // A chave NUNCA é ecoada.
+    assert!(
+        !stdout.contains("sk-ant-secret-123"),
+        "chave vazou no stdout: {stdout}"
+    );
+    assert!(stdout.contains("gravada"));
+
+    biblia(&cfg)
+        .args(["config", "keys"])
+        .assert()
+        .success()
+        .stdout(contains("anthropic"))
+        .stdout(contains("sk-ant-secret-123").not());
+
+    // O secrets.toml existe e não está no config.toml.
+    let secrets = dir.path().join("secrets.toml");
+    assert!(secrets.exists());
+    let cfg_content = std::fs::read_to_string(&cfg).unwrap_or_default();
+    assert!(!cfg_content.contains("sk-ant-secret-123"));
+
+    biblia(&cfg)
+        .args(["config", "remove-key", "anthropic"])
+        .assert()
+        .success()
+        .stdout(contains("removida"));
+}
+
+#[test]
+fn set_key_unknown_provider_is_usage_error() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("config.toml");
+    biblia(&cfg)
+        .args(["config", "set-key", "skynet", "x"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(contains("Provedor desconhecido"));
 }
 
 #[test]

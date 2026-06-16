@@ -3,6 +3,12 @@
 > Uma linha por tarefa concluída e verde: ID, data, resumo, hash do commit.
 > Ver `IMPLEMENTATION_PLAN.md` §6 para a definição das tarefas.
 
+## Fase 5 — Camada de IA (BYOK)
+
+| Tarefa | Data | Resumo | Commit |
+|---|---|---|---|
+| T5.1 | 2026-06-16 | Abstração `LlmProvider` + tipos (Denomination/StudyDepth) + `MockLlmProvider`; `KeyStore` (secrets.toml 0600, fora do git, `BIBLIA_SECRETS`); `config provider` + `config set-key/remove-key/keys`; ADR-0007/0008; 6 core + 3 integração | _pendente_ |
+
 ## Fase 4 — Planos de leitura
 
 | Tarefa | Data | Resumo | Commit |

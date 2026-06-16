@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
 
+use biblia_core::ai::{KeyStore, PROVIDERS};
 use biblia_core::config::Config;
 
 /// Argumentos do subcomando `config`.
@@ -29,6 +30,20 @@ enum ConfigAction {
     },
     /// Lista todas as configurações e o caminho do arquivo.
     List,
+    /// Grava a chave de API de um provedor (em armazenamento fora do git).
+    SetKey {
+        /// Provedor (anthropic, openai, ollama).
+        provider: String,
+        /// Chave de API.
+        key: String,
+    },
+    /// Remove a chave de um provedor.
+    RemoveKey {
+        /// Provedor.
+        provider: String,
+    },
+    /// Lista os provedores que têm chave (sem mostrar as chaves).
+    Keys,
 }
 
 const EXIT_OK: u8 = 0;
@@ -41,7 +56,84 @@ pub fn run(args: ConfigArgs) -> ExitCode {
         ConfigAction::Set { key, value } => set(&key, &value),
         ConfigAction::Get { key } => get(&key),
         ConfigAction::List => list(),
+        ConfigAction::SetKey { provider, key } => set_key(&provider, &key),
+        ConfigAction::RemoveKey { provider } => remove_key(&provider),
+        ConfigAction::Keys => keys(),
     }
+}
+
+fn set_key(provider: &str, key: &str) -> ExitCode {
+    let provider = provider.to_ascii_lowercase();
+    if !PROVIDERS.contains(&provider.as_str()) {
+        eprintln!(
+            "Provedor desconhecido: `{provider}` (use: {}).",
+            PROVIDERS.join(", ")
+        );
+        return ExitCode::from(EXIT_USAGE);
+    }
+    if key.trim().is_empty() {
+        eprintln!("A chave não pode ser vazia.");
+        return ExitCode::from(EXIT_USAGE);
+    }
+    let mut ks = match KeyStore::open_default() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("Erro ao abrir o cofre de chaves: {e}");
+            return ExitCode::from(EXIT_NOT_FOUND);
+        }
+    };
+    if let Err(e) = ks.set(&provider, key) {
+        eprintln!("Erro ao gravar a chave: {e}");
+        return ExitCode::from(EXIT_NOT_FOUND);
+    }
+    // Nunca ecoa a chave.
+    let where_ = KeyStore::secrets_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    println!("Chave de `{provider}` gravada em {where_} (fora do git).");
+    ExitCode::from(EXIT_OK)
+}
+
+fn remove_key(provider: &str) -> ExitCode {
+    let provider = provider.to_ascii_lowercase();
+    let mut ks = match KeyStore::open_default() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("Erro ao abrir o cofre de chaves: {e}");
+            return ExitCode::from(EXIT_NOT_FOUND);
+        }
+    };
+    match ks.remove(&provider) {
+        Ok(true) => {
+            println!("Chave de `{provider}` removida.");
+            ExitCode::from(EXIT_OK)
+        }
+        Ok(false) => {
+            println!("Nenhuma chave para `{provider}`.");
+            ExitCode::from(EXIT_NOT_FOUND)
+        }
+        Err(e) => {
+            eprintln!("Erro ao remover a chave: {e}");
+            ExitCode::from(EXIT_NOT_FOUND)
+        }
+    }
+}
+
+fn keys() -> ExitCode {
+    let ks = match KeyStore::open_default() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("Erro ao abrir o cofre de chaves: {e}");
+            return ExitCode::from(EXIT_NOT_FOUND);
+        }
+    };
+    let providers = ks.list_providers();
+    if providers.is_empty() {
+        println!("Nenhuma chave configurada.");
+    } else {
+        println!("Provedores com chave: {}", providers.join(", "));
+    }
+    ExitCode::from(EXIT_OK)
 }
 
 fn load() -> std::result::Result<Config, ExitCode> {
