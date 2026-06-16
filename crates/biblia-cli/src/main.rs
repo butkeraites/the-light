@@ -11,6 +11,7 @@ mod read;
 mod render;
 mod search;
 mod theme;
+mod tui;
 mod xref;
 
 use clap::{Parser, Subcommand};
@@ -40,6 +41,8 @@ enum Command {
     Xref(xref::XrefArgs),
     /// Exporta notas/estudos (Markdown ou PDF via pandoc).
     Export(export::ExportArgs),
+    /// Abre a interface de terminal (TUI).
+    Tui(tui::TuiArgs),
 }
 
 fn main() -> ExitCode {
@@ -52,5 +55,6 @@ fn main() -> ExitCode {
         Command::Note(args) => note::run(args),
         Command::Xref(args) => xref::run(args),
         Command::Export(args) => export::run(args),
+        Command::Tui(args) => tui::run(args),
     }
 }

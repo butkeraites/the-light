@@ -1,0 +1,192 @@
+//! Renderização da TUI (widgets ratatui). Recebe `&mut App` para fixar a
+//! rolagem dentro dos limites do conteúdo.
+
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::Frame;
+
+use biblia_core::model::Lang;
+use biblia_core::reference::BOOKS;
+
+use crate::app::{App, Focus};
+
+const ACCENT: Color = Color::Cyan;
+
+/// Desenha a interface completa.
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(frame.area());
+
+    frame.render_widget(
+        Paragraph::new(" Bíblia CLI — TUI").style(Style::new().add_modifier(Modifier::BOLD)),
+        rows[0],
+    );
+
+    let body = Layout::horizontal([Constraint::Length(24), Constraint::Min(10)]).split(rows[1]);
+    draw_books(frame, app, body[0]);
+    draw_reader(frame, app, body[1]);
+
+    frame.render_widget(
+        Paragraph::new(" q sair · ↑↓ navegar · Enter ler · n/p capítulo · Tab foco")
+            .style(Style::new().add_modifier(Modifier::DIM)),
+        rows[2],
+    );
+}
+
+fn border_style(focused: bool) -> Style {
+    if focused {
+        Style::new().fg(ACCENT)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    }
+}
+
+fn draw_books(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = BOOKS
+        .iter()
+        .map(|b| {
+            let name = match app.lang {
+                Lang::Pt => b.name_pt,
+                Lang::En => b.name_en,
+            };
+            ListItem::new(name)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .title("Livros")
+                .border_style(border_style(app.focus == Focus::Books)),
+        )
+        .highlight_style(
+            Style::new()
+                .fg(Color::Black)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
+
+    let mut state = ListState::default();
+    state.select(Some(app.book_idx));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
+    let title = format!(
+        "{} {}  ({})",
+        app.book_name(),
+        app.chapter,
+        app.version_label
+    );
+    let block = Block::bordered()
+        .title(title)
+        .border_style(border_style(app.focus == Focus::Reader));
+    let inner = block.inner(area);
+
+    let lines: Vec<Line> = if app.verses.is_empty() {
+        vec![Line::from(Span::styled(
+            "(sem texto neste capítulo)",
+            Style::new().add_modifier(Modifier::DIM),
+        ))]
+    } else {
+        app.verses
+            .iter()
+            .map(|(n, t)| {
+                Line::from(vec![
+                    Span::styled(format!("{n:>3} "), Style::new().fg(ACCENT)),
+                    Span::raw(t.as_str()),
+                ])
+            })
+            .collect()
+    };
+
+    let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+
+    // Fixa a rolagem dentro do conteúdo renderizado.
+    let total = paragraph.line_count(inner.width) as u16;
+    let max_scroll = total.saturating_sub(inner.height);
+    app.scroll = app.scroll.min(max_scroll);
+
+    frame.render_widget(paragraph.scroll((app.scroll, 0)).block(block), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use biblia_core::model::TranslationId;
+    use biblia_core::store::Store;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+    use rusqlite::params;
+
+    fn seeded_app() -> App {
+        let store = Store::open_in_memory().unwrap();
+        {
+            let conn = store.conn();
+            conn.execute(
+                "INSERT INTO translations(id,abbrev,name,language,license,embeddable) \
+                 VALUES ('kjv','KJV','King James Version','en','public-domain',1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO verses(translation_id,book_number,chapter,verse,text) \
+                 VALUES ('kjv',1,1,1,'In the beginning God created the heaven and the earth')",
+                params![],
+            )
+            .unwrap();
+        }
+        App::new(
+            store,
+            TranslationId::new("kjv"),
+            "KJV".to_string(),
+            Lang::En,
+        )
+        .unwrap()
+    }
+
+    fn to_text(buf: &Buffer) -> String {
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if let Some(cell) = buf.cell((x, y)) {
+                    s.push_str(cell.symbol());
+                }
+            }
+            s.push('\n');
+        }
+        s
+    }
+
+    #[test]
+    fn renders_books_title_and_chapter_text() {
+        let mut app = seeded_app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = to_text(terminal.backend().buffer());
+        assert!(text.contains("Bíblia CLI — TUI"));
+        assert!(text.contains("Livros"));
+        assert!(text.contains("Genesis")); // primeiro livro destacado
+        assert!(text.contains("Genesis 1")); // título do leitor
+        assert!(text.contains("In the beginning"));
+        assert!(text.contains("q sair"));
+    }
+
+    #[test]
+    fn empty_chapter_shows_placeholder() {
+        let mut app = seeded_app();
+        app.select_book(41); // Lucas (42), sem texto semeado
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = to_text(terminal.backend().buffer());
+        assert!(text.contains("sem texto neste capítulo"));
+    }
+}

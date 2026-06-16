@@ -26,6 +26,16 @@ impl<'a> EmbeddedSource<'a> {
     pub fn from_conn(conn: &'a Connection) -> Self {
         EmbeddedSource { conn }
     }
+
+    /// Número de capítulos de um livro numa tradução (0 se ausente).
+    pub fn chapter_count(&self, book: u8, t: &TranslationId) -> Result<u16> {
+        let max: Option<i64> = self.conn.query_row(
+            "SELECT max(chapter) FROM verses WHERE translation_id = ?1 AND book_number = ?2",
+            params![t.as_str(), book as i64],
+            |r| r.get(0),
+        )?;
+        Ok(max.unwrap_or(0) as u16)
+    }
 }
 
 impl BibleSource for EmbeddedSource<'_> {

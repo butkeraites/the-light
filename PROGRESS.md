@@ -3,6 +3,12 @@
 > Uma linha por tarefa concluída e verde: ID, data, resumo, hash do commit.
 > Ver `IMPLEMENTATION_PLAN.md` §6 para a definição das tarefas.
 
+## Fase 3 — TUI (ratatui)
+
+| Tarefa | Data | Resumo | Commit |
+|---|---|---|---|
+| T3.1 | 2026-06-16 | Shell da TUI (`biblia-tui`): guarda RAII do terminal + hook de panic, layout (livros + viewport), navegação por teclado (livros/capítulos/scroll), `biblia tui`; 7 testes (estado + snapshot TestBackend) + 2 integração | _pendente_ |
+
 ## Fase 2 — Estudo pessoal (offline)
 
 | Tarefa | Data | Resumo | Commit |
