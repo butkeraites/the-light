@@ -22,13 +22,19 @@ fn accent(theme: &str) -> Color {
 
 /// Desenha a interface completa.
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    // Degradação graciosa em janelas minúsculas (evita layout impossível).
+    if area.height < 3 || area.width < 24 {
+        frame.render_widget(Paragraph::new("janela pequena demais"), area);
+        return;
+    }
     let acc = accent(app.theme());
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
-    .split(frame.area());
+    .split(area);
 
     let title = format!(" Bíblia CLI — TUI    [{}]", app.version_label());
     frame.render_widget(
@@ -426,6 +432,15 @@ mod tests {
         let text = render(&mut app);
         assert!(text.contains("Buscar: sinned"), "{text}");
         assert!(text.contains("Busca ("), "{text}");
+    }
+
+    #[test]
+    fn tiny_terminal_does_not_panic() {
+        let mut app = seeded_app();
+        for (w, h) in [(1u16, 1u16), (2, 2), (10, 3), (24, 3), (80, 2)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+        }
     }
 
     #[test]

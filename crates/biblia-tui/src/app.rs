@@ -15,6 +15,9 @@ use biblia_core::xref::{self, CrossRef};
 /// Temas disponíveis, ciclados pela tecla `t` e persistidos em `config.toml`.
 pub const THEMES: &[&str] = &["dark", "light", "none"];
 
+/// Resultado de uma leitura de capítulo: `(num_capítulos, capítulo, versículos)`.
+type ChapterData = (u16, u16, Vec<(u16, String)>);
+
 /// Qual painel tem o foco do teclado.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -159,11 +162,13 @@ impl App {
     }
 
     /// Cicla o tema (em memória; persistido por [`App::save_config`] ao sair).
+    /// Tema desconhecido (ex.: `auto` padrão) é tratado como o início do ciclo,
+    /// então a primeira troca sempre dá feedback visível.
     pub fn cycle_theme(&mut self) {
         let cur = THEMES
             .iter()
             .position(|t| *t == self.config.theme)
-            .unwrap_or(THEMES.len() - 1);
+            .unwrap_or(0);
         self.config.theme = THEMES[(cur + 1) % THEMES.len()].to_string();
     }
 
@@ -218,12 +223,12 @@ impl App {
         (self.book_idx + 1) as u8
     }
 
-    /// Nome do livro selecionado no idioma de exibição.
+    /// Nome do livro selecionado no idioma de exibição (`?` se fora de faixa).
     pub fn book_name(&self) -> &'static str {
-        let b = &BOOKS[self.book_idx];
-        match self.lang() {
-            Lang::Pt => b.name_pt,
-            Lang::En => b.name_en,
+        match (BOOKS.get(self.book_idx), self.lang()) {
+            (Some(b), Lang::Pt) => b.name_pt,
+            (Some(b), Lang::En) => b.name_en,
+            (None, _) => "?",
         }
     }
 
@@ -279,21 +284,25 @@ impl App {
         .unwrap_or_default()
     }
 
+    /// Busca capítulo/versículos do banco (imutável). Devolve
+    /// `(num_capítulos, capítulo_efetivo, versículos)`.
+    fn fetch(&self, version: &TranslationId, book: u8, chapter: u16) -> Result<ChapterData> {
+        let src = EmbeddedSource::new(&self.store);
+        let count = src.chapter_count(book, version)?;
+        let chap = chapter.clamp(1, count.max(1));
+        let passage = src.passage(&Reference::whole_chapter(book, chap), version)?;
+        let verses = passage
+            .verses
+            .into_iter()
+            .map(|v| (v.reference.verses.start().unwrap_or(0), v.text))
+            .collect();
+        Ok((count, chap, verses))
+    }
+
+    /// Recarrega o estado atual (usado na construção; propaga erro).
     fn reload(&mut self) -> Result<()> {
-        let book = self.book_number();
-        let version = self.version().clone();
-        let (count, chap, verses) = {
-            let src = EmbeddedSource::new(&self.store);
-            let count = src.chapter_count(book, &version)?;
-            let chap = self.chapter.clamp(1, count.max(1));
-            let passage = src.passage(&Reference::whole_chapter(book, chap), &version)?;
-            let verses: Vec<(u16, String)> = passage
-                .verses
-                .into_iter()
-                .map(|v| (v.reference.verses.start().unwrap_or(0), v.text))
-                .collect();
-            (count, chap, verses)
-        };
+        let (count, chap, verses) =
+            self.fetch(&self.version().clone(), self.book_number(), self.chapter)?;
         self.chapter = chap;
         self.chapter_count = count;
         self.verses = verses;
@@ -301,14 +310,25 @@ impl App {
         Ok(())
     }
 
-    /// Seleciona um livro pelo índice (0..66) e carrega seu capítulo 1.
-    pub fn select_book(&mut self, idx: usize) {
-        if idx >= BOOKS.len() {
+    /// Carrega `(book_idx, chapter)` **atomicamente**: só altera o estado se a
+    /// leitura tiver sucesso (uma falha não deixa o estado inconsistente).
+    fn load_into(&mut self, book_idx: usize, chapter: u16) {
+        if book_idx >= BOOKS.len() {
             return;
         }
-        self.book_idx = idx;
-        self.chapter = 1;
-        let _ = self.reload();
+        let version = self.version().clone();
+        if let Ok((count, chap, verses)) = self.fetch(&version, (book_idx + 1) as u8, chapter) {
+            self.book_idx = book_idx;
+            self.chapter = chap;
+            self.chapter_count = count;
+            self.verses = verses;
+            self.selected = 0;
+        }
+    }
+
+    /// Seleciona um livro pelo índice (0..66) e carrega seu capítulo 1.
+    pub fn select_book(&mut self, idx: usize) {
+        self.load_into(idx, 1);
     }
 
     /// Move a seleção de livro por `delta` (com saturação nas pontas).
@@ -322,22 +342,19 @@ impl App {
     /// Próximo capítulo (ou primeiro do próximo livro).
     pub fn next_chapter(&mut self) {
         if self.chapter < self.chapter_count {
-            self.chapter += 1;
-            let _ = self.reload();
+            self.load_into(self.book_idx, self.chapter + 1);
         } else if self.book_idx + 1 < BOOKS.len() {
-            self.select_book(self.book_idx + 1);
+            self.load_into(self.book_idx + 1, 1);
         }
     }
 
     /// Capítulo anterior (ou último do livro anterior).
     pub fn prev_chapter(&mut self) {
         if self.chapter > 1 {
-            self.chapter -= 1;
-            let _ = self.reload();
+            self.load_into(self.book_idx, self.chapter - 1);
         } else if self.book_idx > 0 {
-            self.book_idx -= 1;
-            self.chapter = u16::MAX;
-            let _ = self.reload();
+            // u16::MAX é fixado para o último capítulo do livro anterior.
+            self.load_into(self.book_idx - 1, u16::MAX);
         }
     }
 
@@ -347,17 +364,22 @@ impl App {
             return;
         }
         let keep = self.selected;
-        self.version_idx = (self.version_idx + 1) % self.versions.len();
-        let _ = self.reload();
-        // Mantém o versículo selecionado, se ainda existir.
-        self.selected = keep.min(self.verses.len().saturating_sub(1));
+        let new_idx = (self.version_idx + 1) % self.versions.len();
+        let version = self.versions[new_idx].id.clone();
+        // Só troca se a leitura na nova versão funcionar (atômico).
+        if let Ok((count, chap, verses)) = self.fetch(&version, self.book_number(), self.chapter) {
+            self.version_idx = new_idx;
+            self.chapter = chap;
+            self.chapter_count = count;
+            self.verses = verses;
+            self.selected = keep.min(self.verses.len().saturating_sub(1));
+        }
     }
 
     /// Salta para uma referência (livro/capítulo/versículo), focando o leitor.
     pub fn go_to(&mut self, reference: &Reference) {
-        self.book_idx = reference.book.saturating_sub(1) as usize;
-        self.chapter = reference.chapter;
-        let _ = self.reload();
+        let book_idx = (reference.book.saturating_sub(1) as usize).min(BOOKS.len() - 1);
+        self.load_into(book_idx, reference.chapter);
         // Posiciona o cursor no versículo da referência, se houver.
         if let Some(v) = reference.verses.start() {
             if let Some(idx) = self.verses.iter().position(|(n, _)| *n == v) {
@@ -729,5 +751,14 @@ mod tests {
         assert_eq!(app.theme(), "none");
         app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(app.theme(), "dark");
+    }
+
+    #[test]
+    fn theme_cycle_from_auto_gives_visible_change() {
+        let mut app = seeded_app();
+        // Padrão "auto" renderiza como escuro; a 1ª troca vai para "light".
+        assert_eq!(app.config.theme, "auto");
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.theme(), "light");
     }
 }
