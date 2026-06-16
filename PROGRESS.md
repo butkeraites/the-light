@@ -3,6 +3,12 @@
 > Uma linha por tarefa concluída e verde: ID, data, resumo, hash do commit.
 > Ver `IMPLEMENTATION_PLAN.md` §6 para a definição das tarefas.
 
+## Fase 1 — Leitura & busca
+
+| Tarefa | Data | Resumo | Commit |
+|---|---|---|---|
+| T1.1 | 2026-06-16 | Leitura paralela: colunas lado a lado (com quebra de linha) e blocos intercalados alinhados por versículo; módulo `render` (9 testes) | _pendente_ |
+
 ## Fase 0 — Fundação
 
 | Tarefa | Data | Resumo | Commit |

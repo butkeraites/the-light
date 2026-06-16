@@ -1,14 +1,16 @@
 //! Subcomando `read` — imprime uma passagem em uma ou mais versões.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
 
-use biblia_core::model::{Passage, Translation, TranslationId};
 use biblia_core::reference::{format_reference, parse_reference};
 use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
+
+use crate::render::{self, VersionColumn};
 
 /// Argumentos do subcomando `read`.
 #[derive(Args)]
@@ -29,6 +31,9 @@ pub struct ReadArgs {
 const EXIT_OK: u8 = 0;
 const EXIT_NOT_FOUND: u8 = 1;
 const EXIT_USAGE: u8 = 2;
+
+/// Largura padrão quando o terminal não informa (ou em pipes).
+const DEFAULT_WIDTH: usize = 100;
 
 /// Executa o comando `read`, devolvendo o código de saída.
 pub fn run(args: ReadArgs) -> ExitCode {
@@ -72,12 +77,11 @@ pub fn run(args: ReadArgs) -> ExitCode {
         .filter(|s| seen.insert(s.clone()))
         .collect();
 
-    let mut printed = 0usize;
-    let mut found_any = false;
+    let mut columns: Vec<VersionColumn> = Vec::new();
     let mut had_error = false;
 
     for slug in &requested {
-        let tid = TranslationId::new(slug.clone());
+        let tid = biblia_core::model::TranslationId::new(slug.clone());
         let Some(meta) = translations.iter().find(|t| t.id == tid) else {
             eprintln!(
                 "Versão desconhecida: `{slug}`. Disponíveis: {}",
@@ -100,18 +104,26 @@ pub fn run(args: ReadArgs) -> ExitCode {
             }
         };
 
-        if printed > 0 {
-            println!();
-        }
-        print_passage(&passage, meta);
-        printed += 1;
-        if !passage.is_empty() {
-            found_any = true;
-        }
+        let verses = passage
+            .verses
+            .iter()
+            .map(|v| (v.reference.verses.start().unwrap_or(0), v.text.clone()))
+            .collect();
+        columns.push(VersionColumn {
+            label: meta.abbrev.clone(),
+            reference: format_reference(&passage.reference, meta.language),
+            verses,
+        });
     }
 
-    // Uma versão pedida que não existe / falhou domina o código de saída: o
-    // usuário pediu algo que não pôde ser atendido.
+    if columns.is_empty() {
+        // Todas as versões pedidas eram desconhecidas/erro.
+        return ExitCode::from(EXIT_USAGE);
+    }
+
+    let found_any = columns.iter().any(|c| !c.verses.is_empty());
+    print!("{}", render_output(&columns));
+
     if had_error {
         ExitCode::from(EXIT_USAGE)
     } else if found_any {
@@ -119,6 +131,28 @@ pub fn run(args: ReadArgs) -> ExitCode {
     } else {
         ExitCode::from(EXIT_NOT_FOUND)
     }
+}
+
+/// Escolhe o modo de renderização: única, colunas lado a lado (TTY largo) ou
+/// blocos intercalados (pipe / terminal estreito).
+fn render_output(columns: &[VersionColumn]) -> String {
+    if columns.len() == 1 {
+        return render::render_single(&columns[0]);
+    }
+    if std::io::stdout().is_terminal() {
+        if let Some(out) = render::render_columns(columns, terminal_width()) {
+            return out;
+        }
+    }
+    render::render_interleaved(columns)
+}
+
+/// Largura atual do terminal, com piso e fallback sensatos.
+fn terminal_width() -> usize {
+    terminal_size::terminal_size()
+        .map(|(w, _)| w.0 as usize)
+        .filter(|w| *w >= 2 * render::MIN_COL_WIDTH)
+        .unwrap_or(DEFAULT_WIDTH)
 }
 
 /// Abre o banco no caminho dado, ou no padrão do usuário.
@@ -131,23 +165,4 @@ fn open_store(db: Option<&Path>) -> Result<Store, ExitCode> {
         eprintln!("Erro ao abrir o banco: {e}");
         ExitCode::from(EXIT_NOT_FOUND)
     })
-}
-
-/// Imprime o cabeçalho da referência (no idioma da versão) e os versículos.
-fn print_passage(passage: &Passage, meta: &Translation) {
-    println!(
-        "{} ({})",
-        format_reference(&passage.reference, meta.language),
-        meta.abbrev
-    );
-    if passage.is_empty() {
-        println!("  (nenhum versículo encontrado)");
-        return;
-    }
-    for v in &passage.verses {
-        // Todo `Verse` de uma passagem carrega `VerseRange::Single`; `start()`
-        // devolve esse número.
-        let n = v.reference.verses.start().unwrap_or(0);
-        println!("  {n:>3}  {}", v.text);
-    }
 }

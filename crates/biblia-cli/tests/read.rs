@@ -33,6 +33,24 @@ fn seeded_db() -> (TempDir, PathBuf) {
             )
             .unwrap();
         }
+        // Segunda versão (PT) para testar leitura paralela.
+        conn.execute(
+            "INSERT INTO translations(id,abbrev,name,language,license,embeddable) \
+             VALUES ('alm','ALM','Almeida','pt','public-domain',1)",
+            [],
+        )
+        .unwrap();
+        for (v, text) in [
+            (16, "Porque Deus amou o mundo"),
+            (17, "Porque Deus enviou o seu Filho ao mundo"),
+        ] {
+            conn.execute(
+                "INSERT INTO verses(translation_id,book_number,chapter,verse,text) \
+                 VALUES ('alm',43,3,?1,?2)",
+                rusqlite::params![v as i64, text],
+            )
+            .unwrap();
+        }
     }
     (dir, path)
 }
@@ -114,6 +132,21 @@ fn mixed_known_and_unknown_version_exits_usage() {
         .code(2)
         .stdout(contains("For God so loved the world"))
         .stderr(contains("Versão desconhecida"));
+}
+
+#[test]
+fn parallel_two_versions_shows_both_aligned() {
+    let (_dir, path) = seeded_db();
+    // Saída capturada (não-TTY) → blocos intercalados por versículo.
+    biblia()
+        .args(["read", "John 3:16-17", "--version", "kjv,alm", "--db"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(contains("For God so loved the world"))
+        .stdout(contains("Porque Deus amou o mundo"))
+        .stdout(contains("For God sent not"))
+        .stdout(contains("Porque Deus enviou"));
 }
 
 #[test]

@@ -3,6 +3,7 @@
 //! Subcomandos são adicionados tarefa a tarefa. Hoje: `read`.
 
 mod read;
+mod render;
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
