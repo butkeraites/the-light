@@ -3,10 +3,30 @@
 > Leitor de Bíblia hackeável para terminal, com estudo exegético assistido por IA
 > (lente denominacional configurável), dados locais e modelo *bring-your-own-key*.
 
-Status: **Fase 4 — Planos de leitura concluída** (Marco 4, `v0.5.0`): planos anual/NT/
-evangelhos com progresso e export `.ics`, sobre a TUI (Fase 3), estudo pessoal (Fase 2)
-e leitura/busca (Fase 1). Veja [`SPEC.md`](SPEC.md) para a visão e
-[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap.
+Status: **`v1.0.0`** — leitura/busca (Fase 1), estudo pessoal offline (Fase 2),
+TUI (Fase 3), planos de leitura (Fase 4), estudo por IA opt-in/BYOK (Fase 5) e
+conectores de versões protegidas (Fase 6). Veja [`SPEC.md`](SPEC.md) para a visão
+e [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap.
+
+## Instalação
+
+```sh
+# Via cargo (compila do código):
+cargo install biblia-cli            # instala o binário `biblia`
+
+# Ou compilando o repositório:
+cargo install --path crates/biblia-cli
+
+# Ou Homebrew (macOS/Linux), quando o tap estiver publicado:
+brew install rbritobut/tap/biblia
+
+# Ou baixe o binário pré-compilado da sua plataforma em:
+#   https://github.com/rbritobut/biblia/releases
+# (cada arquivo vem com um `.sha256` para conferência).
+```
+
+> Requer apenas o binário — SQLite vem embutido e o TLS é `rustls` (sem OpenSSL
+> de sistema). Gere o banco de versões livres uma vez (passo 1 abaixo).
 
 ## Uso rápido
 
@@ -82,6 +102,21 @@ cargo run -p biblia-cli -- read "John 3:16" --version esv --db data/biblia.sqlit
 4. **Licença em primeiro lugar** — só embarcamos versões livres (domínio público).
 5. **Hackeável** — config em texto, fontes plugáveis, prompts editáveis.
 
+## Privacidade & rede
+
+**Telemetria zero.** O `biblia` não coleta, envia nem registra nada por padrão.
+A única vez que ele faz rede é quando **você** pede explicitamente: um estudo/
+pergunta de IA (vai só ao provedor que você escolheu) ou a leitura de uma versão
+protegida via conector (vai só à API que você configurou, com a sua chave). Todo
+o resto — leitura, busca, notas, planos — é 100% local. As chaves ficam num
+`secrets.toml` (`0600`, fora do git) e nunca são logadas nem ecoadas.
+
+## Prompts editáveis (lentes denominacionais)
+
+Os prompts de cada lente são embutidos, mas você pode sobrescrevê-los criando
+`prompts/<lente>.md` no diretório de config (ou em `BIBLIA_PROMPTS`). Veja
+[`docs/PROMPTS.md`](docs/PROMPTS.md) para o passo a passo e os slugs das lentes.
+
 ## Estrutura do workspace
 
 ```
@@ -114,5 +149,9 @@ cargo fmt --check                 # formatação
 
 ## Licença
 
-Código sob `MIT OR Apache-2.0`. Os dados bíblicos seguem suas próprias licenças
-(ver `DATA_SOURCES.md`); apenas versões de domínio público são embarcadas.
+Código sob **`MIT OR Apache-2.0`** (à sua escolha) — ver [`LICENSE-MIT`](LICENSE-MIT)
+e [`LICENSE-APACHE`](LICENSE-APACHE). Os dados bíblicos seguem suas próprias
+licenças (ver [`DATA_SOURCES.md`](DATA_SOURCES.md)): apenas versões de domínio
+público / livres são embarcadas; versões protegidas só via conector com a
+credencial do usuário. As referências cruzadas são cortesia da **OpenBible.info
+(CC-BY)**.

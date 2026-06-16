@@ -10,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = "1.0.102"
-biblia-core = { path = "../biblia-core" }
+biblia-core = { version = "1.0.0", path = "../biblia-core" }
 ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
 
 [dev-dependencies]

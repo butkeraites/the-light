@@ -3,6 +3,17 @@
 > Uma linha por tarefa concluída e verde: ID, data, resumo, hash do commit.
 > Ver `IMPLEMENTATION_PLAN.md` §6 para a definição das tarefas.
 
+## Fase 7 — Polimento & lançamento aberto
+
+| Tarefa | Data | Resumo | Commit |
+|---|---|---|---|
+| T7.1 | 2026-06-16 | Empacotamento: versão do workspace → `1.0.0` (pins internos sincronizados); metadados crates.io no `biblia-cli` (keywords/categories/readme); CI (`.github/workflows/ci.yml`: fmt+clippy, testes Linux/macOS/Windows, build MSRV 1.80); release (`release.yml`: binários x86_64/aarch64 + .sha256 em tags `v*`); fórmula Homebrew (`packaging/homebrew/biblia.rb`) | _pendente_ |
+| T7.2 | 2026-06-16 | Documentação: README com instalação + privacidade/telemetria-zero + licença; `--help` de qualidade (long_about + exemplos); guia de prompts editáveis (`docs/PROMPTS.md`); DATA_SOURCES §4 (conectores) | _pendente_ |
+| T7.3 | 2026-06-16 | Hardening: `LICENSE-MIT` + `LICENSE-APACHE`; telemetria zero documentada; deps internas com versão (publicável); fix do `--version` (colisão clap `propagate_version` × flag de versão da Bíblia); testes de metadados (`meta_cmd.rs`: --version/--help/subcomandos) | _pendente_ |
+
+**Marco 7** (2026-06-16): release pública. Tag `v1.0.0`. Suíte: 243 testes,
+`clippy -D warnings` e `fmt` verdes.
+
 ## Fase 6 — Conectores de versões protegidas
 
 | Tarefa | Data | Resumo | Commit |

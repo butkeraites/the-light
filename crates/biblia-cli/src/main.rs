@@ -1,6 +1,8 @@
 //! Binário `biblia` — interface de linha de comando.
 //!
-//! Subcomandos são adicionados tarefa a tarefa. Hoje: `read`.
+//! Leitor de Bíblia hackeável para terminal: leitura/busca offline de versões
+//! livres, estudo pessoal (marcações, notas, xrefs, planos), TUI, e estudo por
+//! IA opt-in (BYOK). Cada subcomando vive no seu módulo.
 
 mod ai_common;
 mod ask;
@@ -24,7 +26,26 @@ use std::process::ExitCode;
 
 /// Leitor de Bíblia hackeável para terminal.
 #[derive(Parser)]
-#[command(name = "biblia", version, about, long_about = None)]
+#[command(
+    name = "biblia",
+    version,
+    about = "Leitor de Bíblia hackeável para terminal (CLI + TUI), bilíngue PT/EN.",
+    long_about = "Bíblia CLI — leitor de Bíblia para o terminal.\n\n\
+        Offline-first: leitura e busca de versões livres funcionam sem internet \
+        e sem IA. O estudo por IA é opt-in e BYOK (você usa sua própria chave); \
+        a chave nunca sai da máquina exceto para o provedor escolhido. Sem \
+        telemetria. Versões protegidas (ARA/NVI/ESV/…) nunca são embarcadas — \
+        só via conector com a sua credencial.",
+    after_help = "EXEMPLOS:\n  \
+        biblia read \"John 3:16\" --version kjv,alm1911\n  \
+        biblia search \"graça\" --book Romanos\n  \
+        biblia note add \"Jo 3.16\" \"Versículo **central**.\"\n  \
+        biblia plan start annual --year 2026\n  \
+        biblia tui\n  \
+        biblia study \"Ef 2.8-9\" --lens presbiteriana   # requer provedor + chave\n\n\
+        Mais detalhes em cada subcomando: `biblia <comando> --help`.\n\
+        Documentação: https://github.com/rbritobut/biblia"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

@@ -1,20 +1,24 @@
 [package]
 name = "biblia-cli"
-description = "Binário `biblia`: leitor de Bíblia para terminal (CLI)."
+description = "Binário `biblia`: leitor de Bíblia hackeável para terminal (CLI + TUI), bilíngue PT/EN, com estudo por IA opt-in (BYOK)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+readme = "../../README.md"
+keywords = ["bible", "cli", "tui", "scripture", "study"]
+categories = ["command-line-utilities", "text-processing"]
 
 [[bin]]
 name = "biblia"
 path = "src/main.rs"
 
 [dependencies]
-biblia-core = { path = "../biblia-core" }
-biblia-tui = { version = "0.1.0", path = "../biblia-tui" }
+biblia-core = { version = "1.0.0", path = "../biblia-core" }
+biblia-tui = { version = "1.0.0", path = "../biblia-tui" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.5.61", features = ["derive"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
