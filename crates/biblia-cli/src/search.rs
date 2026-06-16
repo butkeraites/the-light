@@ -76,22 +76,23 @@ pub fn run(args: SearchArgs) -> ExitCode {
     });
     let tid = TranslationId::new(version.clone());
     let Some(meta) = translations.iter().find(|t| t.id == tid) else {
+        // Banco sem versões = recurso ausente (1); versão pedida inexistente = uso (2).
         if translations.is_empty() {
             eprintln!(
                 "Nenhuma versão importada. Gere o banco com:\n  \
                  cargo run -p xtask -- import --version kjv,alm1911"
             );
-        } else {
-            eprintln!(
-                "Versão desconhecida: `{}`. Disponíveis: {}",
-                version,
-                translations
-                    .iter()
-                    .map(|t| t.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            return ExitCode::from(EXIT_NOT_FOUND);
         }
+        eprintln!(
+            "Versão desconhecida: `{}`. Disponíveis: {}",
+            version,
+            translations
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         return ExitCode::from(EXIT_USAGE);
     };
 

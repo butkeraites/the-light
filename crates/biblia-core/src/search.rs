@@ -82,7 +82,10 @@ pub fn search(
         params.push(Value::Integer(book as i64));
     }
     sql.push_str(" ORDER BY score LIMIT ?");
-    params.push(Value::Integer(opts.limit as i64));
+    // Clamp para [1, i64::MAX]: evita LIMIT 0 (inútil) e o cast usize→i64 que
+    // transformaria valores enormes em -1 (que o SQLite trata como "sem limite").
+    let limit = opts.limit.clamp(1, i64::MAX as usize) as i64;
+    params.push(Value::Integer(limit));
 
     let mut stmt = conn.prepare(&sql)?;
     let tid = opts.translation.clone();
@@ -209,6 +212,23 @@ mod tests {
         let hits = search(store.conn(), "Deus ceus", &opts).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].reference.book, 1);
+    }
+
+    #[test]
+    fn search_limit_zero_is_clamped_to_one() {
+        let store = seeded();
+        let mut opts = SearchOptions::new("alm".into());
+        opts.limit = 0; // clamp → 1 (não 0, nem "sem limite")
+        assert_eq!(search(store.conn(), "graca", &opts).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn search_huge_limit_does_not_wrap_to_unlimited() {
+        let store = seeded();
+        let mut opts = SearchOptions::new("alm".into());
+        opts.limit = usize::MAX; // não deve virar LIMIT -1 (sem limite)
+                                 // Há 3 versículos com "graça"; o cap não os esconde.
+        assert_eq!(search(store.conn(), "graca", &opts).unwrap().len(), 3);
     }
 
     #[test]

@@ -142,6 +142,21 @@ fn search_unknown_book_exits_usage() {
 }
 
 #[test]
+fn search_empty_db_exits_not_found() {
+    // Banco sem versões importadas = recurso ausente → código 1 (igual ao read).
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("empty.sqlite");
+    Store::open(&path).unwrap(); // cria banco migrado, porém vazio
+    biblia()
+        .args(["search", "graca", "--db"])
+        .arg(&path)
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(contains("Nenhuma versão importada"));
+}
+
+#[test]
 fn search_unknown_version_exits_usage() {
     let (_dir, path) = seeded_db();
     biblia()

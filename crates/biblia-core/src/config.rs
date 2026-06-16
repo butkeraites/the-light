@@ -104,14 +104,25 @@ impl Config {
         self.save_to(&Self::config_path()?)
     }
 
-    /// Grava num caminho específico (criando diretórios).
+    /// Grava num caminho específico (criando diretórios), de forma **atômica**:
+    /// escreve num arquivo temporário no mesmo diretório, faz `sync` e renomeia
+    /// por cima — assim uma falha no meio nunca deixa o `config.toml` corrompido.
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
+        use std::io::Write;
+
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => {
+                std::fs::create_dir_all(p)?;
+                p.to_path_buf()
             }
-        }
-        std::fs::write(path, toml::to_string_pretty(self)?)?;
+            _ => std::path::PathBuf::from("."),
+        };
+
+        let data = toml::to_string_pretty(self)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+        tmp.write_all(data.as_bytes())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path).map_err(|e| ConfigError::Io(e.error))?;
         Ok(())
     }
 

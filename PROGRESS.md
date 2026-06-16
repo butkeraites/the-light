@@ -13,7 +13,12 @@
 | T1.4 | 2026-06-16 | Tema/cores ANSI: número, referência e destaque coloridos; --plain, NO_COLOR, auto-TTY; 3 testes theme + 1 integração | c8df604 |
 
 **Marco 1** (2026-06-16): CLI de leitura/busca utilizável no dia a dia. Tag `v0.2.0`.
-Suíte: 108 testes + 1 doctest, `clippy -D warnings` e `fmt` verdes.
+
+**Revisão adversarial pós-Marco 1** (2026-06-16): 18 achados → 13 confirmados →
+corrigidos os relevantes: alinhamento de colunas com versificação divergente
+(separador pendurado); gravação atômica do `config.toml`; exit code do `search`
+em banco vazio (→1, igual ao read); clamp do `limit` da busca; `read` cai para
+`kjv` quando nada é pedido/configurado. Suíte: 112 testes + 1 doctest verdes.
 
 ## Fase 0 — Fundação
 

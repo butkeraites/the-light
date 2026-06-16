@@ -92,12 +92,16 @@ pub fn run(args: ReadArgs) -> ExitCode {
 
     // Versões pedidas, sem duplicatas, preservando a ordem informada.
     let mut seen = std::collections::HashSet::new();
-    let requested: Vec<String> = version_spec
+    let mut requested: Vec<String> = version_spec
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .filter(|s| seen.insert(s.clone()))
         .collect();
+    // Nada especificado nem configurado → usa "kjv" como padrão sensato.
+    if requested.is_empty() {
+        requested.push("kjv".to_string());
+    }
 
     let mut columns: Vec<VersionColumn> = Vec::new();
     let mut had_error = false;

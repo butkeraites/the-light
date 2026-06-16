@@ -25,6 +25,10 @@ pub struct VersionColumn {
 }
 
 /// Número de caracteres (aproxima colunas do terminal para PT/EN).
+///
+/// Assume texto NFC sem marcas combinantes e sem caracteres de largura dupla —
+/// verdadeiro para os datasets embarcados (KJV, Almeida, latim NFC). Scripts
+/// CJK/combining exigiriam `unicode-width`/grapheme clusters (fase futura).
 fn width_of(s: &str) -> usize {
     s.chars().count()
 }
@@ -193,8 +197,16 @@ pub fn render_columns(cols: &[VersionColumn], width: usize, style: &Style) -> Op
 
     let mut out = String::new();
     let mut push_line = |gutter: &str, cells: &[String]| {
+        // Descarta colunas vazias **à direita** (evita separador pendurado),
+        // mas mantém colunas vazias no meio para preservar o alinhamento das
+        // colunas seguintes.
+        let last = cells.iter().rposition(|c| !c.trim().is_empty());
+        let kept: &[String] = match last {
+            Some(i) => &cells[..=i],
+            None => &[],
+        };
         let mut line = String::from(gutter);
-        line.push_str(&cells.join(SEP));
+        line.push_str(&kept.join(SEP));
         out.push_str(line.trim_end());
         out.push('\n');
     };
@@ -341,6 +353,34 @@ mod tests {
         let a = col("KJV", "John 3:16", &[(16, "x")]);
         let b = col("ALM", "João 3.16", &[(16, "y")]);
         assert!(render_columns(&[a, b], 20, &Style::plain()).is_none());
+    }
+
+    #[test]
+    fn columns_with_differing_versification_have_no_dangling_separator() {
+        // Verso 17 só existe na coluna esquerda (versificação divergente).
+        let a = col("KJV", "John 3:16-17", &[(16, "loved"), (17, "sent")]);
+        let b = col("ALM", "João 3.16", &[(16, "amou")]);
+        let out = render_columns(&[a, b], 60, &Style::plain()).unwrap();
+        // Nenhuma linha termina com o separador pendurado.
+        for line in out.lines() {
+            assert!(
+                !line.trim_end().ends_with('│'),
+                "separador pendurado: {line:?}"
+            );
+            assert_eq!(line, line.trim_end(), "espaço à direita: {line:?}");
+        }
+        // O verso 16 (presente nas duas) ainda mostra as duas colunas.
+        let l16 = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("16"))
+            .unwrap();
+        assert!(l16.contains("loved") && l16.contains("amou"));
+        // O verso 17 (só à esquerda) aparece sem coluna direita pendurada.
+        let l17 = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("17"))
+            .unwrap();
+        assert!(l17.contains("sent"));
     }
 
     #[test]
