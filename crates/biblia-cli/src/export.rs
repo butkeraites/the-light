@@ -107,12 +107,14 @@ fn studies_markdown() -> Result<String, ExitCode> {
         out.push_str("_Nenhum estudo salvo._\n");
         return Ok(out);
     }
-    for path in files {
-        if let Ok(body) = std::fs::read_to_string(&path) {
-            out.push_str(body.trim_end());
-            out.push_str("\n\n---\n\n");
-        }
-    }
+    let bodies: Vec<String> = files
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .map(|b| b.trim_end().to_string())
+        .collect();
+    // Separador `---` **entre** estudos, sem sobra no final.
+    out.push_str(&bodies.join("\n\n---\n\n"));
+    out.push('\n');
     Ok(out)
 }
 

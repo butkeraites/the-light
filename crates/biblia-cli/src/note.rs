@@ -172,10 +172,18 @@ fn launch_editor(path: &Path) -> std::io::Result<bool> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
-    let mut parts = editor.split_whitespace();
-    let prog = parts.next().unwrap_or("vi");
+    // Parsing tipo-shell: respeita aspas (ex.: `vim "+set number"`, `code --wait`).
+    let parts = shlex::split(&editor).filter(|p| !p.is_empty());
+    let (prog, rest) = match parts {
+        Some(p) => {
+            let mut it = p.into_iter();
+            let prog = it.next().unwrap_or_else(|| "vi".to_string());
+            (prog, it.collect::<Vec<_>>())
+        }
+        None => ("vi".to_string(), Vec::new()),
+    };
     let status = std::process::Command::new(prog)
-        .args(parts)
+        .args(rest)
         .arg(path)
         .status()?;
     Ok(status.success())

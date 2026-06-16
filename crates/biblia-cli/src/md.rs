@@ -41,6 +41,9 @@ pub fn render_markdown(src: &str, style: &Style) -> String {
                 }
             }
             Event::Start(Tag::Item) => {
+                if in_quote {
+                    out.push_str("│ ");
+                }
                 out.push_str(&"  ".repeat(list_depth.max(1)));
                 out.push_str("• ");
             }
@@ -65,9 +68,10 @@ pub fn render_markdown(src: &str, style: &Style) -> String {
             Event::Code(t) => out.push_str(&style.dim(&t)),
             Event::Text(t) => {
                 if in_code_block {
+                    let prefix = if in_quote { "│ " } else { "" };
                     let indented = t
                         .lines()
-                        .map(|l| format!("    {l}"))
+                        .map(|l| format!("{prefix}    {l}"))
                         .collect::<Vec<_>>()
                         .join("\n");
                     out.push_str(&style.dim(&indented));
@@ -137,5 +141,14 @@ mod tests {
     #[test]
     fn empty_input_yields_single_newline() {
         assert_eq!(render_markdown("", &Style::plain()), "\n");
+    }
+
+    #[test]
+    fn blockquote_list_keeps_marker_on_each_item() {
+        let out = render_markdown("> - um\n> - dois\n", &Style::plain());
+        // Cada item da lista dentro da citação mantém o marcador "│".
+        let item_lines: Vec<&str> = out.lines().filter(|l| l.contains('•')).collect();
+        assert_eq!(item_lines.len(), 2, "{out:?}");
+        assert!(item_lines.iter().all(|l| l.contains('│')), "{out:?}");
     }
 }

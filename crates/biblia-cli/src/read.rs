@@ -224,22 +224,25 @@ fn print_highlight_footer(reference: &Reference, columns: &[VersionColumn], lang
 }
 
 /// Imprime um rodapé com as notas que cobrem os versículos exibidos.
+///
+/// Lê o diretório de notas **uma única vez** e filtra em memória (evita
+/// `O(versículos × leituras de diretório)` ao ler um capítulo inteiro).
 fn print_notes_footer(reference: &Reference, columns: &[VersionColumn], lang: Lang, style: &Style) {
     let Ok(store) = NoteStore::open_default() else {
         return;
     };
-    let mut seen = std::collections::HashSet::new();
-    let mut found = Vec::new();
-    for v in shown_verses(columns) {
-        let Ok(notes) = store.covering(reference.book, reference.chapter, v) else {
-            return;
-        };
-        for note in notes {
-            if seen.insert(note.reference) {
-                found.push(note);
-            }
-        }
-    }
+    let Ok(notes) = store.list() else {
+        return;
+    };
+    let shown: std::collections::HashSet<u16> = shown_verses(columns).into_iter().collect();
+    let found: Vec<_> = notes
+        .iter()
+        .filter(|n| {
+            n.reference.book == reference.book
+                && n.reference.chapter == reference.chapter
+                && shown.iter().any(|&v| n.reference.verses.contains(v))
+        })
+        .collect();
     if found.is_empty() {
         return;
     }

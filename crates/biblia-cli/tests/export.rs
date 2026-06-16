@@ -81,6 +81,44 @@ fn export_unknown_target_is_usage_error() {
 }
 
 #[test]
+fn export_pdf_requires_output() {
+    let dir = TempDir::new().unwrap();
+    biblia(dir.path())
+        .args(["export", "notes", "--format", "pdf"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(contains("--output"));
+}
+
+#[test]
+fn export_studies_no_trailing_separator() {
+    let dir = TempDir::new().unwrap();
+    let studies = dir.path().join("studies");
+    std::fs::create_dir_all(&studies).unwrap();
+    std::fs::write(studies.join("a.md"), "Estudo A").unwrap();
+    std::fs::write(studies.join("b.md"), "Estudo B").unwrap();
+
+    let out = biblia(dir.path())
+        .args(["export", "study"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    assert_eq!(
+        text.matches("---").count(),
+        1,
+        "um separador entre dois estudos: {text:?}"
+    );
+    assert!(
+        !text.trim_end().ends_with("---"),
+        "sem separador sobrando: {text:?}"
+    );
+}
+
+#[test]
 fn export_unknown_format_is_usage_error() {
     let dir = TempDir::new().unwrap();
     biblia(dir.path())
