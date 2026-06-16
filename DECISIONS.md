@@ -9,7 +9,9 @@
 **Decisão:** instalar via `rustup` (toolchain `stable`, perfil default com clippy e
 rustfmt). Fixado em `rust-toolchain.toml` (channel `stable`).
 **Consequência:** ambiente reprodutível; `rust-version` mínima declarada como 1.80 no
-workspace.
+workspace. **Atualização (2026-06-16, Fase 7):** a MSRV subiu para **1.85** — o
+conector HTTP (`reqwest 0.13`, adicionado na Fase 5) exige rustc 1.85. O job de
+MSRV do CI valida 1.85.
 
 ## ADR-0002 — Workspace com 3 crates + xtask · 2026-06-15
 **Contexto:** o plano (§1) pede separar lógica testável de CLI e TUI.
