@@ -68,6 +68,21 @@ impl Style {
         self.paint(if self.light { "35" } else { "32" }, s)
     }
 
+    /// Negrito (cabeçalhos/ênfase forte de Markdown).
+    pub fn bold(&self, s: &str) -> String {
+        self.paint("1", s)
+    }
+
+    /// Itálico (ênfase de Markdown).
+    pub fn italic(&self, s: &str) -> String {
+        self.paint("3", s)
+    }
+
+    /// Esmaecido (código/metadados).
+    pub fn dim(&self, s: &str) -> String {
+        self.paint("2", s)
+    }
+
     /// Converte os marcadores de destaque da busca em cor (ou colchetes, sem cor).
     pub fn highlight(&self, s: &str) -> String {
         if self.enabled {

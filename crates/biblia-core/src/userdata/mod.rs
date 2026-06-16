@@ -7,8 +7,10 @@
 //! - `studies/` — estudos de IA (fase 5).
 
 pub mod highlights;
+pub mod notes;
 
 pub use highlights::{Highlight, HighlightStore};
+pub use notes::{Note, NoteStore};
 
 use std::path::PathBuf;
 

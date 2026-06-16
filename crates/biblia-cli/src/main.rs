@@ -4,6 +4,8 @@
 
 mod config;
 mod highlight;
+mod md;
+mod note;
 mod read;
 mod render;
 mod search;
@@ -30,6 +32,8 @@ enum Command {
     Config(config::ConfigArgs),
     /// Marca versículos com cor/etiqueta.
     Highlight(highlight::HighlightArgs),
+    /// Notas em Markdown por versículo/intervalo.
+    Note(note::NoteArgs),
 }
 
 fn main() -> ExitCode {
@@ -39,5 +43,6 @@ fn main() -> ExitCode {
         Command::Search(args) => search::run(args),
         Command::Config(args) => config::run(args),
         Command::Highlight(args) => highlight::run(args),
+        Command::Note(args) => note::run(args),
     }
 }

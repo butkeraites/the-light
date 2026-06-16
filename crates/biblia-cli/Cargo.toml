@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 biblia-core = { path = "../biblia-core" }
 clap = { version = "4.5.61", features = ["derive"] }
+pulldown-cmark = { version = "0.13.4", default-features = false }
 terminal_size = "0.4.4"
 
 [dev-dependencies]

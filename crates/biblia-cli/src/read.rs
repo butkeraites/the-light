@@ -11,8 +11,9 @@ use biblia_core::model::{Lang, Reference};
 use biblia_core::reference::{format_reference, parse_reference};
 use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
-use biblia_core::userdata::HighlightStore;
+use biblia_core::userdata::{HighlightStore, NoteStore};
 
+use crate::md::render_markdown;
 use crate::render::{self, VersionColumn};
 use crate::theme::Style;
 
@@ -152,6 +153,7 @@ pub fn run(args: ReadArgs) -> ExitCode {
     let found_any = columns.iter().any(|c| !c.verses.is_empty());
     print!("{}", render_output(&columns, &style));
     print_highlight_footer(&reference, &columns, config.language);
+    print_notes_footer(&reference, &columns, config.language, &style);
 
     if had_error {
         ExitCode::from(EXIT_USAGE)
@@ -176,22 +178,25 @@ fn render_output(columns: &[VersionColumn], style: &Style) -> String {
     render::render_interleaved(columns, style)
 }
 
-/// Imprime um rodapé com as marcações que cobrem os versículos exibidos.
-fn print_highlight_footer(reference: &Reference, columns: &[VersionColumn], lang: Lang) {
-    let Ok(store) = HighlightStore::load_default() else {
-        return;
-    };
-    // Versículos exibidos (união entre as versões).
+/// Versículos exibidos (união entre as versões), ordenados e sem repetição.
+fn shown_verses(columns: &[VersionColumn]) -> Vec<u16> {
     let mut shown: Vec<u16> = columns
         .iter()
         .flat_map(|c| c.verses.iter().map(|(n, _)| *n))
         .collect();
     shown.sort_unstable();
     shown.dedup();
+    shown
+}
 
+/// Imprime um rodapé com as marcações que cobrem os versículos exibidos.
+fn print_highlight_footer(reference: &Reference, columns: &[VersionColumn], lang: Lang) {
+    let Ok(store) = HighlightStore::load_default() else {
+        return;
+    };
     let mut seen = std::collections::HashSet::new();
     let mut found = Vec::new();
-    for v in shown {
+    for v in shown_verses(columns) {
         for h in store.covering(reference.book, reference.chapter, v) {
             if seen.insert(h.reference) {
                 found.push(h);
@@ -215,6 +220,36 @@ fn print_highlight_footer(reference: &Reference, columns: &[VersionColumn], lang
             h.color,
             tag
         );
+    }
+}
+
+/// Imprime um rodapé com as notas que cobrem os versículos exibidos.
+fn print_notes_footer(reference: &Reference, columns: &[VersionColumn], lang: Lang, style: &Style) {
+    let Ok(store) = NoteStore::open_default() else {
+        return;
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    for v in shown_verses(columns) {
+        let Ok(notes) = store.covering(reference.book, reference.chapter, v) else {
+            return;
+        };
+        for note in notes {
+            if seen.insert(note.reference) {
+                found.push(note);
+            }
+        }
+    }
+    if found.is_empty() {
+        return;
+    }
+    println!();
+    println!("Notas:");
+    for note in found {
+        println!("  {}", format_reference(&note.reference, lang));
+        for line in render_markdown(&note.body, style).lines() {
+            println!("    {line}");
+        }
     }
 }
 
