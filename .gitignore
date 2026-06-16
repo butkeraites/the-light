@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Datasets baixados (não versionar binários grandes; ver DATA_SOURCES.md)
+/data/seed/*.zip
+/data/seed/*.json
+/data/seed/*.sql
+/data/seed/*.tsv
+/data/seed/*.csv
+/data/seed/*.txt
+
+# Bancos gerados
+*.sqlite
+*.sqlite3
+*.db
+
+# Segredos — NUNCA commitar chaves de API
+*.key
+.env
+.env.*
+secrets.toml
+
+# SO
+.DS_Store
+Thumbs.db
