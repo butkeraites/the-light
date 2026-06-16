@@ -9,10 +9,18 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::{AiError, LlmProvider, Result};
+use super::{AiError, ChatMessage, LlmProvider, Result};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_MAX_TOKENS: u32 = 8192;
+
+/// Converte o histórico de conversa no array `[{role, content}]` das APIs.
+fn messages_json(messages: &[ChatMessage]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|m| json!({ "role": m.role.as_str(), "content": m.content }))
+        .collect()
+}
 
 /// Modelo padrão por provedor (quando não configurado).
 pub fn default_model(provider: &str) -> &'static str {
@@ -121,6 +129,21 @@ fn anthropic_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Val
     })
 }
 
+fn anthropic_chat_body(
+    model: &str,
+    system: &str,
+    messages: &[ChatMessage],
+    max_tokens: u32,
+) -> Value {
+    json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "thinking": { "type": "adaptive" },
+        "messages": messages_json(messages),
+    })
+}
+
 /// Extrai o texto dos blocos `type == "text"` (ignora blocos de pensamento).
 fn anthropic_extract(v: &Value) -> Result<String> {
     if v.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
@@ -153,6 +176,16 @@ impl LlmProvider for AnthropicProvider {
     }
     fn complete(&self, system: &str, user: &str) -> Result<String> {
         let body = anthropic_body(&self.model, system, user, DEFAULT_MAX_TOKENS);
+        self.post(body)
+    }
+    fn chat(&self, system: &str, messages: &[ChatMessage]) -> Result<String> {
+        let body = anthropic_chat_body(&self.model, system, messages, DEFAULT_MAX_TOKENS);
+        self.post(body)
+    }
+}
+
+impl AnthropicProvider {
+    fn post(&self, body: Value) -> Result<String> {
         let req = blocking_client()?
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &self.key)
@@ -184,6 +217,12 @@ fn openai_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value 
     })
 }
 
+fn openai_chat_body(model: &str, system: &str, messages: &[ChatMessage], max_tokens: u32) -> Value {
+    let mut msgs = vec![json!({ "role": "system", "content": system })];
+    msgs.extend(messages_json(messages));
+    json!({ "model": model, "max_tokens": max_tokens, "messages": msgs })
+}
+
 fn openai_extract(v: &Value) -> Result<String> {
     let text = v
         .pointer("/choices/0/message/content")
@@ -203,7 +242,20 @@ impl LlmProvider for OpenAiProvider {
         &self.model
     }
     fn complete(&self, system: &str, user: &str) -> Result<String> {
-        let body = openai_body(&self.model, system, user, DEFAULT_MAX_TOKENS);
+        self.post(openai_body(&self.model, system, user, DEFAULT_MAX_TOKENS))
+    }
+    fn chat(&self, system: &str, messages: &[ChatMessage]) -> Result<String> {
+        self.post(openai_chat_body(
+            &self.model,
+            system,
+            messages,
+            DEFAULT_MAX_TOKENS,
+        ))
+    }
+}
+
+impl OpenAiProvider {
+    fn post(&self, body: Value) -> Result<String> {
         let req = blocking_client()?
             .post("https://api.openai.com/v1/chat/completions")
             .header("authorization", format!("Bearer {}", self.key))
@@ -234,6 +286,12 @@ fn ollama_body(model: &str, system: &str, user: &str) -> Value {
     })
 }
 
+fn ollama_chat_body(model: &str, system: &str, messages: &[ChatMessage]) -> Value {
+    let mut msgs = vec![json!({ "role": "system", "content": system })];
+    msgs.extend(messages_json(messages));
+    json!({ "model": model, "stream": false, "messages": msgs })
+}
+
 fn ollama_extract(v: &Value) -> Result<String> {
     let text = v
         .pointer("/message/content")
@@ -253,8 +311,16 @@ impl LlmProvider for OllamaProvider {
         &self.model
     }
     fn complete(&self, system: &str, user: &str) -> Result<String> {
+        self.post(ollama_body(&self.model, system, user))
+    }
+    fn chat(&self, system: &str, messages: &[ChatMessage]) -> Result<String> {
+        self.post(ollama_chat_body(&self.model, system, messages))
+    }
+}
+
+impl OllamaProvider {
+    fn post(&self, body: Value) -> Result<String> {
         let url = format!("{}/api/chat", self.host.trim_end_matches('/'));
-        let body = ollama_body(&self.model, system, user);
         let req = blocking_client()?
             .post(url)
             .header("content-type", "application/json")

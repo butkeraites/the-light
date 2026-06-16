@@ -13,7 +13,7 @@ pub mod study;
 
 pub use keys::KeyStore;
 pub use providers::{build_provider, estimate_cost_usd};
-pub use study::{ask, numbered_passage, study, StudyRequest, StudyResult};
+pub use study::{ask, ask_session, numbered_passage, study, StudyRequest, StudyResult};
 
 use std::str::FromStr;
 
@@ -169,6 +169,35 @@ pub enum AiError {
 /// Resultado da camada de IA.
 pub type Result<T> = std::result::Result<T, AiError>;
 
+/// Papel de uma mensagem numa conversa multi-turno.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatRole {
+    /// Mensagem do usuário.
+    User,
+    /// Resposta do assistente.
+    Assistant,
+}
+
+impl ChatRole {
+    /// String do papel no formato das APIs (`"user"`/`"assistant"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChatRole::User => "user",
+            ChatRole::Assistant => "assistant",
+        }
+    }
+}
+
+/// Uma mensagem de uma conversa (turno) enviada ao provedor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatMessage {
+    /// Papel (usuário/assistente).
+    pub role: ChatRole,
+    /// Conteúdo textual.
+    pub content: String,
+}
+
 /// Interface de *chat* de um provedor de LLM.
 pub trait LlmProvider {
     /// Nome do provedor (ex.: `"anthropic"`).
@@ -179,6 +208,22 @@ pub trait LlmProvider {
 
     /// Envia `system` + `user` e devolve a resposta de texto.
     fn complete(&self, system: &str, user: &str) -> Result<String>;
+
+    /// Conversa multi-turno: `system` + histórico de mensagens. A implementação
+    /// padrão dobra o histórico num transcript e chama [`LlmProvider::complete`]
+    /// (suficiente para `mock` e provedores que não suportam multi-mensagem);
+    /// os provedores reais sobrescrevem com um corpo de mensagens nativo.
+    fn chat(&self, system: &str, messages: &[ChatMessage]) -> Result<String> {
+        let mut user = String::new();
+        for m in messages {
+            let who = match m.role {
+                ChatRole::User => "Usuário",
+                ChatRole::Assistant => "Assistente",
+            };
+            user.push_str(&format!("{who}: {}\n\n", m.content));
+        }
+        self.complete(system, user.trim_end())
+    }
 
     /// Estimativa grosseira de tokens (≈ 4 caracteres por token).
     fn estimate_tokens(&self, text: &str) -> usize {

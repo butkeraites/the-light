@@ -12,12 +12,12 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use the_light_core::ai::{estimate_cost_usd, PROVIDERS};
+use the_light_core::ai::{ChatRole, PROVIDERS};
 use the_light_core::model::Lang;
 use the_light_core::reference::{format_reference, scan_references, BOOKS};
 use the_light_core::search::{HL_END, HL_START};
 
-use crate::app::{AiBody, AiPanel, App, Focus, Input, InputKind, SettingsMode};
+use crate::app::{AiPanel, AiStatus, App, Focus, Input, InputKind, SessionBrowser, SettingsMode};
 use crate::theme::Palette;
 
 /// Bloco padrão: borda arredondada, respiro interno e título estilizado.
@@ -88,6 +88,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.settings.is_some() {
         draw_settings(frame, app, area, &pal);
+    }
+    if let Some(browser) = &app.sessions {
+        draw_sessions(frame, browser, area, &pal);
     }
 }
 
@@ -455,7 +458,7 @@ fn draw_input(frame: &mut Frame, area: Rect, input: &Input, pal: &Palette, boxed
 /// Rodapé de atalhos (quando não há input ativo). Mostra o tema atual.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
     let hints = format!(
-        " ↑↓ versículo · n/p cap · v versão · a perguntar · c IA · / buscar · g ir · x refs · t tema [{}] · ? ajuda",
+        " ↑↓ versículo · n/p cap · v versão · / buscar · g ir · x refs · t tema [{}] · a IA · s conversas · c chaves · ? ajuda",
         app.theme()
     );
     frame.render_widget(Paragraph::new(hints).style(pal.fg(pal.dim)), area);
@@ -474,7 +477,8 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
         Line::from("  ← →         trocar de painel · Tab alterna foco"),
         Line::from("  Home/End    início / fim · PgUp/PgDn ±10"),
         Line::from("  v           trocar versão"),
-        Line::from("  a           perguntar à IA sobre o capítulo"),
+        Line::from("  a           perguntar/continuar a conversa com a IA"),
+        Line::from("  s           conversas salvas (retomar)"),
         Line::from("  c           configurar provedor/chaves de IA"),
         Line::from("  /           buscar (full-text)"),
         Line::from("  g           ir para referência (ex.: Jo 3.16)"),
@@ -497,37 +501,51 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
     frame.render_widget(Paragraph::new(lines).block(blk), popup);
 }
 
-/// Overlay rolável com a pergunta/resposta da IA (tecla `a`).
+/// Overlay rolável com a **conversa** com a IA (tecla `a`; navegada por `s`).
 fn draw_ai_panel(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
     let Some(panel) = &app.ai else {
         return;
     };
+    let session = &panel.session;
     let w = (area.width * 4 / 5).clamp(20, 92);
     let h = (area.height * 4 / 5).max(6);
     let popup = centered_rect(w, h, area);
 
+    let title = if session.title.is_empty() {
+        format!(" Conversa — {} ", session.anchor_label)
+    } else {
+        format!(" {} — {} ", session.title, session.anchor_label)
+    };
     let blk = Block::bordered()
         .border_type(BorderType::Rounded)
         .padding(Padding::horizontal(1))
         .border_style(pal.fg(pal.accent))
         .title(Line::from(Span::styled(
-            format!(" Pergunta — {} ", panel.reference_label),
+            title,
             pal.fg(pal.accent).add_modifier(Modifier::BOLD),
         )));
     let inner = blk.inner(popup);
 
-    let mut lines: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("❯ ", pal.fg(pal.accent).add_modifier(Modifier::BOLD)),
-            Span::styled(
-                panel.question.clone(),
-                pal.fg(pal.dim).add_modifier(Modifier::ITALIC),
-            ),
-        ]),
-        Line::from(""),
-    ];
-    match &panel.body {
-        AiBody::Pending => {
+    // Conversa: alterna turnos de usuário (❯, em acento) e respostas (realçadas).
+    let mut lines: Vec<Line> = Vec::new();
+    for m in &session.messages {
+        if m.role == ChatRole::User {
+            lines.push(Line::from(vec![
+                Span::styled("❯ ", pal.fg(pal.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    m.content.clone(),
+                    pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        } else {
+            for l in m.content.lines() {
+                lines.push(ref_highlighted_line(l, pal));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+    match &panel.status {
+        AiStatus::Pending => {
             const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
             let sp = FRAMES[(app.spinner as usize) % FRAMES.len()];
             lines.push(Line::from(Span::styled(
@@ -535,55 +553,52 @@ fn draw_ai_panel(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
                 pal.fg(pal.dim),
             )));
         }
-        AiBody::Answer(answer) => {
-            // Realça inline cada referência citada no texto.
-            for l in answer.lines() {
-                lines.push(ref_highlighted_line(l, pal));
-            }
-            // Lista numerada de saltos rápidos (a "viagem rápida").
-            if !panel.refs.is_empty() {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Saltar para  (Tab seleciona · Enter/1-9 salta):",
-                    pal.fg(pal.accent).add_modifier(Modifier::BOLD),
-                )));
-                for (i, r) in panel.refs.iter().enumerate() {
-                    let marker = if i < 9 {
-                        format!("[{}] ", i + 1)
-                    } else {
-                        "    ".to_string()
-                    };
-                    let label = format_reference(r, app.lang());
-                    let style = if i == panel.ref_selected {
-                        pal.selection_style()
-                    } else {
-                        pal.fg(pal.accent)
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("  {marker}{label}"),
-                        style,
-                    )));
-                }
-            }
-        }
-        AiBody::Error(msg) => {
+        AiStatus::Error(msg) => lines.push(Line::from(Span::styled(
+            format!("⚠ {msg}"),
+            pal.fg(pal.warn),
+        ))),
+        AiStatus::Idle => {}
+    }
+    // Lista numerada de saltos rápidos (a "viagem rápida").
+    if !panel.refs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Saltar para  (Tab seleciona · Enter/1-9 salta):",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )));
+        for (i, r) in panel.refs.iter().enumerate() {
+            let marker = if i < 9 {
+                format!("[{}] ", i + 1)
+            } else {
+                "    ".to_string()
+            };
+            let label = format_reference(r, app.lang());
+            let style = if i == panel.ref_selected {
+                pal.selection_style()
+            } else {
+                pal.fg(pal.accent)
+            };
             lines.push(Line::from(Span::styled(
-                format!("⚠ {msg}"),
-                pal.fg(pal.warn),
+                format!("  {marker}{label}"),
+                style,
             )));
         }
     }
+
+    // Rolagem com clamp: `scroll` grande (ex.: u16::MAX) prende no fim.
+    let body_h = inner.height.saturating_sub(1).max(1);
+    let max_scroll = (lines.len() as u16).saturating_sub(body_h);
+    let scroll = panel.scroll.min(max_scroll);
 
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .wrap(Wrap { trim: false })
-            .scroll((panel.scroll, 0))
+            .scroll((scroll, 0))
             .block(blk),
         popup,
     );
 
-    // Rodapé (sobrescreve a última linha interna): modelo + estimativa.
+    // Rodapé (sobrescreve a última linha interna) com os atalhos da conversa.
     if inner.height >= 1 {
         let frect = Rect {
             x: inner.x,
@@ -622,29 +637,18 @@ fn ref_highlighted_line(src: &str, pal: &Palette) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Rodapé do overlay de IA: modelo, tokens estimados e custo (quando conhecido).
+/// Rodapé do overlay de conversa: provedor/modelo + atalhos.
 fn ai_footer(panel: &AiPanel) -> String {
     let nav = if panel.refs.is_empty() {
-        "↑↓ rola · Esc fecha"
+        "a continua · ↑↓ rola · Esc fecha"
     } else {
-        "Tab/1-9 salta · ↑↓ rola · Esc fecha"
+        "a continua · Tab/1-9 salta · ↑↓ rola · Esc fecha"
     };
-    if panel.model.is_empty() {
-        return nav.to_string();
-    }
-    let out = match &panel.body {
-        AiBody::Answer(a) => a.chars().count().div_ceil(4),
-        _ => 0,
-    };
-    match estimate_cost_usd(&panel.model, panel.input_tokens, out) {
-        Some(c) if c > 0.0 => format!(
-            "{} · ≈{}+{} tok · ≈${:.4} · {nav}",
-            panel.model, panel.input_tokens, out, c
-        ),
-        _ => format!(
-            "{} · ≈{}+{} tok · {nav}",
-            panel.model, panel.input_tokens, out
-        ),
+    let model = &panel.session.model;
+    if model.is_empty() {
+        nav.to_string()
+    } else {
+        format!("{model} · {nav}")
     }
 }
 
@@ -715,6 +719,54 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         .border_style(pal.fg(pal.accent))
         .title(Line::from(Span::styled(
             " Configurar IA ",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(blk), popup);
+}
+
+/// Navegador de conversas salvas (tecla `s`).
+fn draw_sessions(frame: &mut Frame, browser: &SessionBrowser, area: Rect, pal: &Palette) {
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "Conversas salvas",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    if browser.items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (nenhuma ainda — tecle a para começar uma conversa)",
+            pal.fg(pal.dim),
+        )));
+    } else {
+        for (i, s) in browser.items.iter().enumerate() {
+            let when = s.updated_at.format("%Y-%m-%d %H:%M");
+            let cursor = if i == browser.selected { "❯ " } else { "  " };
+            let style = if i == browser.selected {
+                pal.selection_style()
+            } else {
+                pal.fg(pal.dim)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{cursor}{}  ·  {}  ·  {when}", s.title, s.anchor_label),
+                style,
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ↑↓ move · Enter abre · d apaga · Esc fecha",
+        pal.fg(pal.dim),
+    )));
+
+    let popup = centered_rect(72, lines.len() as u16 + 2, area);
+    let blk = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
+        .border_style(pal.fg(pal.accent))
+        .title(Line::from(Span::styled(
+            " Conversas ",
             pal.fg(pal.accent).add_modifier(Modifier::BOLD),
         )));
     frame.render_widget(Clear, popup);
@@ -976,40 +1028,46 @@ mod tests {
 
     // --- Overlays de IA ----------------------------------------------------
 
-    #[test]
-    fn ai_panel_renders_question_and_answer() {
-        let mut app = seeded_app();
-        app.ai = Some(AiPanel {
-            reference_label: "Romans 3".into(),
-            question: "o que significa?".into(),
-            model: "claude-opus-4-8".into(),
-            input_tokens: 120,
-            body: AiBody::Answer("Resposta de teste do modelo.".into()),
-            refs: Vec::new(),
+    use the_light_core::ai::ChatRole;
+    use the_light_core::userdata::Session;
+
+    /// Conversa de teste: 1 pergunta + 1 resposta, refs computadas da resposta.
+    fn convo(answer: &str) -> AiPanel {
+        let mut s = Session::start(
+            "id".into(),
+            "T".into(),
+            "Romans 3".into(),
+            "ctx".into(),
+            Lang::En,
+            "mock".into(),
+            "mock-1".into(),
+        );
+        s.push(ChatRole::User, "pergunta".into());
+        s.push(ChatRole::Assistant, answer.into());
+        AiPanel {
+            refs: crate::app::cited_refs(answer),
+            session: s,
+            status: AiStatus::Idle,
             ref_selected: 0,
             scroll: 0,
-        });
+        }
+    }
+
+    #[test]
+    fn ai_panel_renders_conversation() {
+        let mut app = seeded_app();
+        app.ai = Some(convo("Resposta de teste do modelo."));
         let text = render(&mut app);
-        assert!(text.contains("Pergunta — Romans 3"), "{text}");
+        assert!(text.contains("Romans 3"), "{text}");
+        assert!(text.contains("pergunta"), "{text}");
         assert!(text.contains("Resposta de teste"), "{text}");
-        // Rodapé com o modelo (estimativa de custo).
-        assert!(text.contains("claude-opus-4-8"), "{text}");
+        assert!(text.contains("mock-1"), "rodapé com o modelo:\n{text}");
     }
 
     #[test]
     fn ai_panel_lists_cited_references_for_fast_travel() {
         let mut app = seeded_app();
-        let answer = "Veja Romans 6:23 e Romans 3:24.".to_string();
-        app.ai = Some(AiPanel {
-            reference_label: "Romans 3".into(),
-            question: "q".into(),
-            model: "mock-1".into(),
-            input_tokens: 0,
-            refs: crate::app::cited_refs(&answer),
-            ref_selected: 0,
-            body: AiBody::Answer(answer),
-            scroll: 0,
-        });
+        app.ai = Some(convo("Veja Romans 6:23 e Romans 3:24."));
         let text = render(&mut app);
         assert!(text.contains("Saltar para"), "{text}");
         assert!(text.contains("[1] Romans 6:23"), "{text}");
@@ -1019,29 +1077,37 @@ mod tests {
     #[test]
     fn ai_panel_renders_pending_and_error() {
         let mut app = seeded_app();
-        app.ai = Some(AiPanel {
-            reference_label: "Romans 3".into(),
-            question: "q".into(),
-            model: String::new(),
-            input_tokens: 0,
-            body: AiBody::Pending,
-            refs: Vec::new(),
-            ref_selected: 0,
-            scroll: 0,
-        });
+        let mut panel = convo("ignorada");
+        panel.status = AiStatus::Pending;
+        app.ai = Some(panel);
         assert!(render(&mut app).contains("consultando"));
 
-        app.ai = Some(AiPanel {
-            reference_label: "Romans 3".into(),
-            question: "q".into(),
-            model: String::new(),
-            input_tokens: 0,
-            body: AiBody::Error("sem chave para `anthropic`".into()),
-            refs: Vec::new(),
-            ref_selected: 0,
-            scroll: 0,
-        });
+        let mut panel = convo("ignorada");
+        panel.status = AiStatus::Error("sem chave para `anthropic`".into());
+        app.ai = Some(panel);
         assert!(render(&mut app).contains("sem chave"));
+    }
+
+    #[test]
+    fn sessions_browser_lists_saved_conversations() {
+        let mut app = seeded_app();
+        let mut s = Session::start(
+            "id".into(),
+            "sobre a graça".into(),
+            "Romans 3".into(),
+            "ctx".into(),
+            Lang::En,
+            "mock".into(),
+            "mock-1".into(),
+        );
+        s.push(ChatRole::User, "q".into());
+        app.sessions = Some(crate::app::SessionBrowser {
+            items: vec![s],
+            selected: 0,
+        });
+        let text = render(&mut app);
+        assert!(text.contains("Conversas"), "{text}");
+        assert!(text.contains("sobre a graça"), "{text}");
     }
 
     #[test]

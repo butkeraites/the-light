@@ -4,7 +4,7 @@
 
 use crate::model::{Lang, Passage, Reference};
 
-use super::{prompts, Denomination, LlmProvider, Result, StudyDepth};
+use super::{prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyDepth};
 
 /// Pedido de estudo de uma passagem.
 pub struct StudyRequest<'a> {
@@ -127,6 +127,15 @@ impl StudyResult {
     }
 }
 
+/// Monta o corpo da mensagem de usuário de uma pergunta ancorada num contexto.
+pub(crate) fn ask_user_prompt(question: &str, context: &str) -> String {
+    format!(
+        "Pergunta: {question}\n\n\
+         CONTEXTO (referências fornecidas — ancore a resposta nelas):\n{context}\n\n\
+         Responda citando os versículos pertinentes; se o contexto não bastar, diga isso.",
+    )
+}
+
 /// Pergunta livre ancorada num contexto de referências (RAG leve).
 pub fn ask(
     provider: &dyn LlmProvider,
@@ -135,12 +144,37 @@ pub fn ask(
     lang: Lang,
 ) -> Result<String> {
     let system = prompts::ask_system_prompt(lang);
-    let user = format!(
-        "Pergunta: {question}\n\n\
-         CONTEXTO (referências fornecidas — ancore a resposta nelas):\n{context}\n\n\
-         Responda citando os versículos pertinentes; se o contexto não bastar, diga isso.",
-    );
-    provider.complete(&system, &user)
+    provider.complete(&system, &ask_user_prompt(question, context))
+}
+
+/// Conversa multi-turno ancorada num contexto. `turns` é o histórico completo
+/// (alternando usuário/assistente) terminando na pergunta mais recente do
+/// usuário. O `context` (capítulo + refs) é embutido **apenas na primeira**
+/// mensagem de usuário; os turnos seguintes ficam como puro diálogo, e a
+/// memória da conversa carrega o contexto inicial.
+pub fn ask_session(
+    provider: &dyn LlmProvider,
+    lang: Lang,
+    context: &str,
+    turns: &[ChatMessage],
+) -> Result<String> {
+    let system = prompts::ask_system_prompt(lang);
+    let mut wrapped_first = false;
+    let messages: Vec<ChatMessage> = turns
+        .iter()
+        .map(|m| {
+            if m.role == ChatRole::User && !wrapped_first {
+                wrapped_first = true;
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: ask_user_prompt(&m.content, context),
+                }
+            } else {
+                m.clone()
+            }
+        })
+        .collect();
+    provider.chat(&system, &messages)
 }
 
 #[cfg(test)]
@@ -209,5 +243,74 @@ mod tests {
         let provider = MockLlmProvider::new("Resposta ancorada.");
         let answer = ask(&provider, "O que é graça?", "Ef 2.8 ...", Lang::Pt).unwrap();
         assert_eq!(answer, "Resposta ancorada.");
+    }
+
+    /// Provedor de teste que devolve os conteúdos das mensagens unidos — permite
+    /// inspecionar o que `ask_session` montou (sem rede).
+    struct EchoProvider;
+    impl LlmProvider for EchoProvider {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn model(&self) -> &str {
+            "echo-1"
+        }
+        fn complete(&self, _system: &str, user: &str) -> Result<String> {
+            Ok(user.to_string())
+        }
+        fn chat(&self, _system: &str, messages: &[ChatMessage]) -> Result<String> {
+            Ok(messages
+                .iter()
+                .map(|m| format!("[{}] {}", m.role.as_str(), m.content))
+                .collect::<Vec<_>>()
+                .join("\n---\n"))
+        }
+    }
+
+    fn user(c: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::User,
+            content: c.to_string(),
+        }
+    }
+    fn assistant(c: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: c.to_string(),
+        }
+    }
+
+    #[test]
+    fn ask_session_wraps_context_only_in_first_user_turn() {
+        let turns = [user("q1"), assistant("a1"), user("q2")];
+        let out = ask_session(&EchoProvider, Lang::Pt, "CTX-UNICO", &turns).unwrap();
+        // O contexto aparece uma única vez (só no 1º turno de usuário).
+        assert_eq!(out.matches("CTX-UNICO").count(), 1, "{out}");
+        assert_eq!(out.matches("CONTEXTO").count(), 1, "{out}");
+        // O follow-up "q2" chega cru (sem novo bloco de contexto).
+        assert!(out.contains("[user] q2"), "{out}");
+        // A resposta intermediária do assistente é preservada.
+        assert!(out.contains("[assistant] a1"), "{out}");
+    }
+
+    #[test]
+    fn chat_default_impl_folds_history_for_mock() {
+        // MockLlmProvider não sobrescreve `chat`: usa o fold padrão e devolve fixo.
+        let provider = MockLlmProvider::new("ok");
+        let out = provider
+            .chat("sys", &[user("oi"), assistant("olá"), user("e agora?")])
+            .unwrap();
+        assert_eq!(out, "ok");
+    }
+
+    #[test]
+    fn chat_role_serde_roundtrip() {
+        assert_eq!(serde_json::to_string(&ChatRole::User).unwrap(), "\"user\"");
+        assert_eq!(
+            serde_json::to_string(&ChatRole::Assistant).unwrap(),
+            "\"assistant\""
+        );
+        let r: ChatRole = serde_json::from_str("\"assistant\"").unwrap();
+        assert_eq!(r, ChatRole::Assistant);
     }
 }

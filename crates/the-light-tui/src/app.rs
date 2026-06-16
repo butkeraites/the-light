@@ -5,14 +5,16 @@ use std::sync::mpsc::Receiver;
 use anyhow::{anyhow, Result};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use the_light_core::ai::{self, build_provider, KeyStore, LlmProvider, PROVIDERS};
+use the_light_core::ai::{
+    self, build_provider, ChatMessage, ChatRole, KeyStore, LlmProvider, PROVIDERS,
+};
 use the_light_core::config::Config;
 use the_light_core::model::{Lang, Reference, SearchHit, TranslationId};
 use the_light_core::reference::{format_reference, parse_reference, scan_references, BOOKS};
 use the_light_core::search::{self, SearchOptions};
 use the_light_core::source::{BibleSource, EmbeddedSource};
 use the_light_core::store::Store;
-use the_light_core::userdata::{Highlight, HighlightStore, Note, NoteStore};
+use the_light_core::userdata::{Highlight, HighlightStore, Note, NoteStore, Session, SessionStore};
 use the_light_core::xref::{self, CrossRef};
 
 /// Temas disponíveis, ciclados pela tecla `t` e persistidos em `config.toml`.
@@ -61,90 +63,61 @@ pub struct XrefNav {
     pub selected: usize,
 }
 
-/// Corpo do painel de pergunta à IA.
+/// Estado da última/atual consulta dentro de uma conversa.
 #[derive(Debug, Clone)]
-pub enum AiBody {
-    /// Consulta em andamento (thread de background).
+pub enum AiStatus {
+    /// Ociosa: mostrando a conversa, pronta para continuar.
+    Idle,
+    /// Consultando o provedor (thread de background).
     Pending,
-    /// Resposta recebida.
-    Answer(String),
-    /// Erro (sem provedor/chave, rede, etc.).
+    /// Erro na última tentativa (sem provedor/chave, rede, etc.).
     Error(String),
 }
 
-/// Overlay de pergunta à IA sobre o texto atual.
+/// Overlay de conversa com a IA — uma **sessão** multi-turno e retomável.
 #[derive(Debug, Clone)]
 pub struct AiPanel {
-    /// Rótulo da âncora (ex.: "Romanos 3").
-    pub reference_label: String,
-    /// Pergunta feita.
-    pub question: String,
-    /// Modelo usado (para rodapé/estimativa de custo).
-    pub model: String,
-    /// Estimativa de tokens de entrada (contexto + pergunta).
-    pub input_tokens: usize,
-    /// Estado/conteúdo do painel.
-    pub body: AiBody,
-    /// Referências bíblicas citadas na resposta (para "viagem rápida").
+    /// A conversa (turnos, contexto, provedor, modelo, timestamps).
+    pub session: Session,
+    /// Estado da última/atual consulta.
+    pub status: AiStatus,
+    /// Referências citadas (agregadas das respostas) para viagem rápida.
     pub refs: Vec<Reference>,
     /// Referência selecionada na lista de saltos.
     pub ref_selected: usize,
-    /// Rolagem vertical da resposta.
+    /// Rolagem vertical.
     pub scroll: u16,
 }
 
 impl AiPanel {
-    fn pending(label: String, question: String, model: String, input_tokens: usize) -> Self {
+    /// Abre o painel a partir de uma sessão (recomputa as refs citadas).
+    fn from_session(session: Session) -> Self {
+        let refs = session_refs(&session);
         AiPanel {
-            reference_label: label,
-            question,
-            model,
-            input_tokens,
-            body: AiBody::Pending,
-            refs: Vec::new(),
-            ref_selected: 0,
-            scroll: 0,
-        }
-    }
-
-    fn error(label: String, question: String, msg: String) -> Self {
-        AiPanel {
-            reference_label: label,
-            question,
-            model: String::new(),
-            input_tokens: 0,
-            body: AiBody::Error(msg),
-            refs: Vec::new(),
-            ref_selected: 0,
-            scroll: 0,
-        }
-    }
-
-    fn with_outcome(
-        label: String,
-        question: String,
-        model: String,
-        input_tokens: usize,
-        outcome: Result<String, String>,
-    ) -> Self {
-        let (body, refs) = match outcome {
-            Ok(answer) => {
-                let refs = cited_refs(&answer);
-                (AiBody::Answer(answer), refs)
-            }
-            Err(e) => (AiBody::Error(e), Vec::new()),
-        };
-        AiPanel {
-            reference_label: label,
-            question,
-            model,
-            input_tokens,
-            body,
+            session,
+            status: AiStatus::Idle,
             refs,
             ref_selected: 0,
             scroll: 0,
         }
     }
+
+    /// Recalcula as refs citadas (após uma nova resposta).
+    fn refresh_refs(&mut self) {
+        self.refs = session_refs(&self.session);
+        if self.ref_selected >= self.refs.len() {
+            self.ref_selected = 0;
+        }
+    }
+}
+
+/// Navegador de conversas salvas (tecla `s`).
+#[derive(Debug, Clone)]
+pub struct SessionBrowser {
+    /// Sessões salvas, da mais recente para a mais antiga.
+    pub items: Vec<Session>,
+    /// Item selecionado.
+    pub selected: usize,
 }
 
 /// Extrai as referências citadas num texto, únicas e na ordem de aparição.
@@ -156,6 +129,32 @@ pub(crate) fn cited_refs(answer: &str) -> Vec<Reference> {
         }
     }
     out
+}
+
+/// Agrega as referências citadas em todas as respostas do assistente.
+fn session_refs(session: &Session) -> Vec<Reference> {
+    let mut out: Vec<Reference> = Vec::new();
+    for m in &session.messages {
+        if m.role == ChatRole::Assistant {
+            for r in cited_refs(&m.content) {
+                if !out.contains(&r) {
+                    out.push(r);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Título curto de uma conversa, derivado da primeira pergunta.
+fn session_title(question: &str) -> String {
+    let t = question.trim();
+    let head: String = t.chars().take(40).collect();
+    if t.chars().count() > 40 {
+        format!("{head}…")
+    } else {
+        head
+    }
 }
 
 /// Modo do modal de configuração de IA.
@@ -178,20 +177,15 @@ pub struct Settings {
     pub mode: SettingsMode,
 }
 
-/// Estimativa grosseira de tokens (≈ 4 caracteres por token).
-fn est_tokens(text: &str) -> usize {
-    text.chars().count().div_ceil(4)
-}
-
-/// Executa a consulta de IA (usada pela thread e pelos testes). Estringe o erro
-/// para poder cruzar a fronteira do canal (`AiError` não é `Send`-amigável aqui).
-fn run_query(
+/// Executa um turno da conversa (usada pela thread e pelos testes). Estringe o
+/// erro para cruzar a fronteira do canal (`AiError` não é `Send`-amigável aqui).
+fn run_session_query(
     provider: &dyn LlmProvider,
-    question: &str,
-    context: &str,
     lang: Lang,
+    context: &str,
+    turns: &[ChatMessage],
 ) -> Result<String, String> {
-    ai::ask(provider, question, context, lang).map_err(|e| e.to_string())
+    ai::ask_session(provider, lang, context, turns).map_err(|e| e.to_string())
 }
 
 /// Metadados de uma versão disponível.
@@ -243,6 +237,8 @@ pub struct App {
     pub spinner: u8,
     /// Modal de configuração de provedor/chaves, se aberto.
     pub settings: Option<Settings>,
+    /// Navegador de conversas salvas, se aberto.
+    pub sessions: Option<SessionBrowser>,
     /// Sai do loop quando `true`.
     pub should_quit: bool,
 }
@@ -291,6 +287,7 @@ impl App {
             ai_rx: None,
             spinner: 0,
             settings: None,
+            sessions: None,
             should_quit: false,
         };
         app.reload()?;
@@ -592,8 +589,9 @@ impl App {
         (label, context)
     }
 
-    /// Submete a pergunta digitada: resolve provedor/chave, monta o contexto e
-    /// dispara a consulta. `mock` roda inline; os reais rodam em thread.
+    /// Submete a pergunta digitada. Cria uma **nova conversa** (se não houver
+    /// overlay aberto) ou **continua** a existente (follow-up); `mock` roda
+    /// inline, os reais em thread. Provedor/chave são resolvidos do `config`.
     fn submit_ask(&mut self) {
         let question = match self.input.as_ref() {
             Some(i) if i.kind == InputKind::Ask => i.buffer.trim().to_string(),
@@ -603,18 +601,33 @@ impl App {
         if question.is_empty() {
             return;
         }
-        let (label, context) = self.ai_context();
-        let lang = self.lang();
-        let name = self.config.provider.trim().to_ascii_lowercase();
-        if name.is_empty() {
-            self.ai = Some(AiPanel::error(
+
+        // Nova conversa: ancora no capítulo atual.
+        if self.ai.is_none() {
+            let (label, context) = self.ai_context();
+            let session = Session::start(
+                Session::generate_id(),
+                session_title(&question),
                 label,
-                question,
+                context,
+                self.lang(),
+                String::new(),
+                String::new(),
+            );
+            self.ai = Some(AiPanel::from_session(session));
+        }
+
+        // Resolve provedor/chave do config atual (permite configurar e retomar).
+        let name = self.config.provider.trim().to_ascii_lowercase();
+        let panel = self.ai.as_mut().unwrap();
+        panel.session.push(ChatRole::User, question);
+        panel.scroll = u16::MAX; // rola até o fim
+        if name.is_empty() {
+            panel.status = AiStatus::Error(
                 "nenhum provedor de IA configurado — pressione c para configurar".to_string(),
-            ));
+            );
             return;
         }
-        // anthropic/openai exigem chave; mock/ollama são locais.
         let key = if name == "anthropic" || name == "openai" {
             match KeyStore::open_default()
                 .ok()
@@ -622,10 +635,8 @@ impl App {
             {
                 Some(k) => Some(k),
                 None => {
-                    self.ai = Some(AiPanel::error(
-                        label,
-                        question,
-                        format!("sem chave para `{name}` — pressione c para configurar"),
+                    panel.status = AiStatus::Error(format!(
+                        "sem chave para `{name}` — pressione c para configurar"
                     ));
                     return;
                 }
@@ -633,41 +644,68 @@ impl App {
         } else {
             None
         };
-        let model = ai::providers::default_model(&name).to_string();
-        let input_tokens = est_tokens(&context) + est_tokens(&question);
-        // O provedor mock roda inline (instantâneo, offline): demo e testes.
+        panel.session.provider = name.clone();
+        panel.session.model = ai::providers::default_model(&name).to_string();
+        panel.status = AiStatus::Pending;
+
+        // Snapshot do que cruza a thread (o `Store`/`Session` não cruzam).
+        let lang = panel.session.lang;
+        let context = panel.session.context.clone();
+        let turns: Vec<ChatMessage> = panel
+            .session
+            .messages
+            .iter()
+            .map(|m| ChatMessage {
+                role: m.role,
+                content: m.content.clone(),
+            })
+            .collect();
+
+        // mock roda inline (instantâneo, offline): demo e testes.
         if name == "mock" {
             let outcome = match build_provider(&name, None, None) {
-                Ok(p) => run_query(p.as_ref(), &question, &context, lang),
+                Ok(p) => run_session_query(p.as_ref(), lang, &context, &turns),
                 Err(e) => Err(e.to_string()),
             };
-            self.ai = Some(AiPanel::with_outcome(
-                label,
-                question,
-                model,
-                input_tokens,
-                outcome,
-            ));
+            self.apply_answer(outcome);
             return;
         }
-        // Provedores reais bloqueiam (reqwest::blocking): rodam em thread para
-        // não congelar a UI; só `String`/`Lang` cruzam o canal (o `Store` não).
         let (tx, rx) = std::sync::mpsc::channel();
-        let (provider_name, q, ctx) = (name.clone(), question.clone(), context);
         std::thread::spawn(move || {
-            let outcome = match build_provider(&provider_name, key, None) {
-                Ok(p) => run_query(p.as_ref(), &q, &ctx, lang),
+            let outcome = match build_provider(&name, key, None) {
+                Ok(p) => run_session_query(p.as_ref(), lang, &context, &turns),
                 Err(e) => Err(e.to_string()),
             };
             let _ = tx.send(outcome);
         });
-        self.ai = Some(AiPanel::pending(label, question, model, input_tokens));
         self.ai_rx = Some(rx);
         self.spinner = 0;
     }
 
-    /// Drena o canal da consulta de IA em andamento (chamado a cada iteração do
-    /// loop). Atualiza o painel quando a resposta/erro chega.
+    /// Aplica o resultado de uma consulta: anexa a resposta, persiste a sessão e
+    /// recomputa as refs citadas. Só age se a consulta estava pendente.
+    fn apply_answer(&mut self, outcome: Result<String, String>) {
+        let Some(panel) = self.ai.as_mut() else {
+            return;
+        };
+        if !matches!(panel.status, AiStatus::Pending) {
+            return;
+        }
+        match outcome {
+            Ok(answer) => {
+                panel.session.push(ChatRole::Assistant, answer);
+                panel.status = AiStatus::Idle;
+                panel.refresh_refs();
+                // Persiste a conversa (best-effort), tornando-a retomável.
+                if let Ok(store) = SessionStore::open_default() {
+                    let _ = store.put(&panel.session);
+                }
+            }
+            Err(e) => panel.status = AiStatus::Error(e),
+        }
+    }
+
+    /// Drena o canal da consulta em andamento (chamado a cada iteração do loop).
     pub fn poll_ai(&mut self) {
         let Some(rx) = self.ai_rx.as_ref() else {
             return;
@@ -675,26 +713,11 @@ impl App {
         match rx.try_recv() {
             Ok(outcome) => {
                 self.ai_rx = None;
-                if let Some(panel) = self.ai.as_mut() {
-                    if matches!(panel.body, AiBody::Pending) {
-                        match outcome {
-                            Ok(answer) => {
-                                panel.refs = cited_refs(&answer);
-                                panel.ref_selected = 0;
-                                panel.body = AiBody::Answer(answer);
-                            }
-                            Err(e) => panel.body = AiBody::Error(e),
-                        }
-                    }
-                }
+                self.apply_answer(outcome);
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.ai_rx = None;
-                if let Some(panel) = self.ai.as_mut() {
-                    if matches!(panel.body, AiBody::Pending) {
-                        panel.body = AiBody::Error("consulta interrompida".to_string());
-                    }
-                }
+                self.apply_answer(Err("consulta interrompida".to_string()));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
@@ -702,7 +725,7 @@ impl App {
 
     /// Avança o indicador de "consultando…" (chamado nos ticks ociosos do loop).
     pub fn tick(&mut self) {
-        if matches!(self.ai.as_ref().map(|p| &p.body), Some(AiBody::Pending)) {
+        if matches!(self.ai.as_ref().map(|p| &p.status), Some(AiStatus::Pending)) {
             self.spinner = self.spinner.wrapping_add(1);
         }
     }
@@ -726,16 +749,19 @@ impl App {
     }
 
     fn handle_ai_key(&mut self, key: KeyEvent) {
-        // Salto diferido: a referência-alvo é resolvida sob o empréstimo do
-        // painel e aplicada depois (fecha o overlay + navega).
+        // Ações diferidas (resolvidas sob o empréstimo do painel, aplicadas depois).
         let mut jump: Option<Reference> = None;
+        let mut followup = false;
         if let Some(panel) = self.ai.as_mut() {
             let n = panel.refs.len();
+            let busy = matches!(panel.status, AiStatus::Pending);
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.ai = None;
                     return;
                 }
+                // `a` continua a conversa (abre o campo de pergunta), exceto se ocupado.
+                KeyCode::Char('a') if !busy => followup = true,
                 KeyCode::Down | KeyCode::Char('j') => panel.scroll = panel.scroll.saturating_add(1),
                 KeyCode::Up | KeyCode::Char('k') => panel.scroll = panel.scroll.saturating_sub(1),
                 KeyCode::PageDown | KeyCode::Char(' ') => {
@@ -754,9 +780,61 @@ impl App {
                 _ => {}
             }
         }
-        if let Some(reference) = jump {
+        if followup {
+            self.open_ask(); // abre o input; a precedência leva a digitação para lá
+        } else if let Some(reference) = jump {
             self.ai = None;
             self.go_to(&reference);
+        }
+    }
+
+    /// Abre o navegador de conversas salvas (tecla `s`).
+    pub fn open_sessions(&mut self) {
+        let items = SessionStore::open_default()
+            .and_then(|s| s.list())
+            .unwrap_or_default();
+        self.sessions = Some(SessionBrowser { items, selected: 0 });
+    }
+
+    fn handle_sessions_key(&mut self, key: KeyEvent) {
+        // Ações diferidas para evitar conflito de empréstimo com `self.ai`/store.
+        let mut open: Option<Session> = None;
+        let mut delete: Option<String> = None;
+        if let Some(browser) = self.sessions.as_mut() {
+            let n = browser.items.len();
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
+                    self.sessions = None;
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('j') if n > 0 => {
+                    if browser.selected + 1 < n {
+                        browser.selected += 1;
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    browser.selected = browser.selected.saturating_sub(1);
+                }
+                KeyCode::Enter => open = browser.items.get(browser.selected).cloned(),
+                KeyCode::Char('d') => {
+                    delete = browser.items.get(browser.selected).map(|s| s.id.clone());
+                }
+                _ => {}
+            }
+        }
+        if let Some(session) = open {
+            self.sessions = None;
+            self.ai = Some(AiPanel::from_session(session));
+        } else if let Some(id) = delete {
+            if let Ok(store) = SessionStore::open_default() {
+                let _ = store.delete(&id);
+            }
+            if let Some(browser) = self.sessions.as_mut() {
+                browser.items.retain(|s| s.id != id);
+                if browser.selected >= browser.items.len() {
+                    browser.selected = browser.items.len().saturating_sub(1);
+                }
+            }
         }
     }
 
@@ -847,9 +925,19 @@ impl App {
 
     /// Processa uma tecla pressionada.
     pub fn handle_key(&mut self, key: KeyEvent) {
-        // Os modais capturam o teclado, em ordem de prioridade.
+        // Os modais capturam o teclado, em ordem de prioridade. `input` vem antes
+        // do overlay de IA: assim a digitação de um follow-up vai para a caixa de
+        // texto enquanto a conversa continua visível ao fundo.
         if self.settings.is_some() {
             self.handle_settings_key(key);
+            return;
+        }
+        if self.sessions.is_some() {
+            self.handle_sessions_key(key);
+            return;
+        }
+        if self.input.is_some() {
+            self.handle_input_key(key);
             return;
         }
         if self.ai.is_some() {
@@ -864,10 +952,6 @@ impl App {
             ) {
                 self.show_help = false;
             }
-            return;
-        }
-        if self.input.is_some() {
-            self.handle_input_key(key);
             return;
         }
         if self.xref_nav.is_some() {
@@ -888,6 +972,7 @@ impl App {
             KeyCode::Char('t') => self.cycle_theme(),
             KeyCode::Char('a') => self.open_ask(),
             KeyCode::Char('c') => self.open_settings(),
+            KeyCode::Char('s') => self.open_sessions(),
             KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('g') => {
                 self.input = Some(Input {
@@ -1323,11 +1408,31 @@ mod tests {
     // --- IA na TUI ---------------------------------------------------------
 
     use std::sync::Mutex;
-    use the_light_core::ai::MockLlmProvider;
+    use the_light_core::ai::{ChatMessage, ChatRole, MockLlmProvider};
 
     // Serializa os testes que mexem em variáveis de ambiente globais
-    // (`LIGHT_SECRETS`/`LIGHT_CONFIG`) para não interferirem entre si.
+    // (`LIGHT_SECRETS`/`LIGHT_CONFIG`/`LIGHT_DATA_DIR`) para não interferirem.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Painel de conversa com uma resposta do assistente (para testes de UI/saltos).
+    fn panel_with_answer(answer: &str) -> AiPanel {
+        let mut s = Session::start(
+            "test-id".into(),
+            "t".into(),
+            "Romans 3".into(),
+            "ctx".into(),
+            Lang::En,
+            "mock".into(),
+            "mock-1".into(),
+        );
+        s.push(ChatRole::User, "q".into());
+        s.push(ChatRole::Assistant, answer.into());
+        AiPanel::from_session(s)
+    }
 
     #[test]
     fn ai_context_has_chapter_text_and_cross_refs() {
@@ -1341,30 +1446,103 @@ mod tests {
     }
 
     #[test]
-    fn run_query_uses_provider() {
+    fn run_session_query_uses_provider() {
         let p = MockLlmProvider::new("resposta fixa");
-        let out = run_query(&p, "pergunta", "contexto", Lang::En);
+        let turns = [ChatMessage {
+            role: ChatRole::User,
+            content: "oi".into(),
+        }];
+        let out = run_session_query(&p, Lang::En, "ctx", &turns);
         assert_eq!(out.unwrap(), "resposta fixa");
     }
 
     #[test]
-    fn ask_with_mock_answers_inline() {
+    fn ask_with_mock_creates_session_and_persists() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
         let mut app = seeded_app();
         app.config.provider = "mock".into();
         app.handle_key(key(KeyCode::Char('a')));
-        assert!(
-            matches!(app.input.as_ref().map(|i| i.kind), Some(InputKind::Ask)),
-            "a abre o prompt de pergunta"
-        );
+        assert!(matches!(
+            app.input.as_ref().map(|i| i.kind),
+            Some(InputKind::Ask)
+        ));
         type_str(&mut app, "o que e pecado?");
         app.handle_key(key(KeyCode::Enter));
+
         let panel = app.ai.as_ref().expect("painel de IA");
         assert!(
-            matches!(panel.body, AiBody::Answer(_)),
+            matches!(panel.status, AiStatus::Idle),
             "mock responde inline"
         );
+        assert_eq!(panel.session.messages.len(), 2, "1 user + 1 assistant");
+        assert_eq!(panel.session.messages[0].role, ChatRole::User);
+        assert_eq!(panel.session.messages[1].role, ChatRole::Assistant);
         assert!(app.ai_rx.is_none(), "mock não usa thread/canal");
         assert!(app.input.is_none(), "o prompt fecha ao enviar");
+
+        // Conversa persistida e retomável.
+        let id = panel.session.id.clone();
+        let store = SessionStore::open_default().unwrap();
+        assert_eq!(store.get(&id).unwrap().expect("salva").messages.len(), 2);
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
+    }
+
+    #[test]
+    fn ask_follow_up_appends_turns() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.handle_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "primeira");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.ai.as_ref().unwrap().session.messages.len(), 2);
+        // `a` (overlay aberto) abre o input para continuar.
+        app.handle_key(key(KeyCode::Char('a')));
+        assert!(
+            matches!(app.input.as_ref().map(|i| i.kind), Some(InputKind::Ask)),
+            "a continua a conversa"
+        );
+        type_str(&mut app, "segunda");
+        app.handle_key(key(KeyCode::Enter));
+        let s = &app.ai.as_ref().unwrap().session;
+        assert_eq!(s.messages.len(), 4, "2 user + 2 assistant");
+        assert_eq!(s.messages[2].content, "segunda");
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
+    }
+
+    #[test]
+    fn follow_up_typing_goes_to_input_not_overlay() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        let cursor = app.selected;
+        app.handle_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "primeira");
+        app.handle_key(key(KeyCode::Enter));
+        // Abre follow-up; digitar 'j' vai para o input, não rola/move o leitor.
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.input.as_ref().unwrap().buffer, "j");
+        assert_eq!(app.selected, cursor, "digitação não mexe no leitor");
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
     }
 
     #[test]
@@ -1373,8 +1551,8 @@ mod tests {
         app.handle_key(key(KeyCode::Char('a')));
         type_str(&mut app, "pergunta");
         app.handle_key(key(KeyCode::Enter));
-        match &app.ai.as_ref().unwrap().body {
-            AiBody::Error(msg) => assert!(msg.contains("provedor"), "{msg}"),
+        match &app.ai.as_ref().unwrap().status {
+            AiStatus::Error(msg) => assert!(msg.contains("provedor"), "{msg}"),
             other => panic!("esperava erro amigável, veio {other:?}"),
         }
         assert!(app.ai_rx.is_none(), "erro local não dispara thread");
@@ -1390,19 +1568,51 @@ mod tests {
     }
 
     #[test]
+    fn sessions_browser_reopens_and_deletes() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.handle_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "sobre a graca");
+        app.handle_key(key(KeyCode::Enter));
+        let id = app.ai.as_ref().unwrap().session.id.clone();
+        app.handle_key(key(KeyCode::Esc)); // fecha (já salvo)
+        assert!(app.ai.is_none());
+
+        // `s` abre o navegador e lista a conversa.
+        app.handle_key(key(KeyCode::Char('s')));
+        assert_eq!(app.sessions.as_ref().unwrap().items.len(), 1);
+        // Enter reabre com o histórico.
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.sessions.is_none());
+        let panel = app.ai.as_ref().expect("conversa reaberta");
+        assert_eq!(panel.session.id, id);
+        assert_eq!(panel.session.messages.len(), 2);
+
+        // Reabre o navegador e apaga.
+        app.handle_key(key(KeyCode::Esc));
+        app.handle_key(key(KeyCode::Char('s')));
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(
+            app.sessions.as_ref().unwrap().items.is_empty(),
+            "apagou da lista"
+        );
+        let store = SessionStore::open_default().unwrap();
+        assert!(store.get(&id).unwrap().is_none(), "apagou do disco");
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
+    }
+
+    #[test]
     fn ai_overlay_captures_keys_and_esc_closes() {
         let mut app = seeded_app();
         let before = app.selected;
-        app.ai = Some(AiPanel {
-            reference_label: "Romans 3".into(),
-            question: "q".into(),
-            model: "mock-1".into(),
-            input_tokens: 0,
-            body: AiBody::Answer("linha".into()),
-            refs: Vec::new(),
-            ref_selected: 0,
-            scroll: 0,
-        });
+        app.ai = Some(panel_with_answer("linha"));
         // ↓ rola o overlay; NÃO move o cursor de versículo.
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.selected, before, "o overlay captura a navegação");
@@ -1422,17 +1632,7 @@ mod tests {
     #[test]
     fn ai_overlay_fast_travels_to_cited_ref() {
         let mut app = seeded_app(); // começa em Romanos 3
-        let answer = "Compare com Romans 6:23.".to_string();
-        app.ai = Some(AiPanel {
-            reference_label: "Romans 3".into(),
-            question: "q".into(),
-            model: "mock-1".into(),
-            input_tokens: 0,
-            refs: cited_refs(&answer),
-            ref_selected: 0,
-            body: AiBody::Answer(answer),
-            scroll: 0,
-        });
+        app.ai = Some(panel_with_answer("Compare com Romans 6:23."));
         assert_eq!(app.ai.as_ref().unwrap().refs.len(), 1);
         app.handle_key(key(KeyCode::Char('1'))); // salta para a 1ª citada
         assert!(app.ai.is_none(), "saltar fecha o overlay");
@@ -1444,17 +1644,7 @@ mod tests {
     #[test]
     fn ai_overlay_enter_jumps_to_selected_ref() {
         let mut app = seeded_app();
-        let answer = "Romans 3:24 e Romans 6:23.".to_string();
-        app.ai = Some(AiPanel {
-            reference_label: "Romans 3".into(),
-            question: "q".into(),
-            model: "mock-1".into(),
-            input_tokens: 0,
-            refs: cited_refs(&answer),
-            ref_selected: 0,
-            body: AiBody::Answer(answer),
-            scroll: 0,
-        });
+        app.ai = Some(panel_with_answer("Romans 3:24 e Romans 6:23."));
         assert_eq!(app.ai.as_ref().unwrap().refs.len(), 2);
         app.handle_key(key(KeyCode::Tab)); // seleciona a 2ª (Rm 6:23)
         assert_eq!(app.ai.as_ref().unwrap().ref_selected, 1);
