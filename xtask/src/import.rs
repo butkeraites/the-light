@@ -180,7 +180,7 @@ fn obtain_bytes(spec: &TranslationSpec, opts: &ImportOptions) -> Result<Vec<u8>>
 }
 
 /// Baixa uma URL seguindo redirects (reqwest segue por padrão).
-fn download(url: &str) -> Result<Vec<u8>> {
+pub(crate) fn download(url: &str) -> Result<Vec<u8>> {
     println!("baixando {url} ...");
     let client = reqwest::blocking::Client::builder()
         .user_agent("biblia-cli-importer")

@@ -10,6 +10,7 @@ mod read;
 mod render;
 mod search;
 mod theme;
+mod xref;
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -34,6 +35,8 @@ enum Command {
     Highlight(highlight::HighlightArgs),
     /// Notas em Markdown por versículo/intervalo.
     Note(note::NoteArgs),
+    /// Referências cruzadas de um versículo.
+    Xref(xref::XrefArgs),
 }
 
 fn main() -> ExitCode {
@@ -44,5 +47,6 @@ fn main() -> ExitCode {
         Command::Config(args) => config::run(args),
         Command::Highlight(args) => highlight::run(args),
         Command::Note(args) => note::run(args),
+        Command::Xref(args) => xref::run(args),
     }
 }
