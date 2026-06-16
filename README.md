@@ -3,8 +3,8 @@
 > Leitor de Bíblia hackeável para terminal, com estudo exegético assistido por IA
 > (lente denominacional configurável), dados locais e modelo *bring-your-own-key*.
 
-Status: **Fase 0 — Fundação concluída** (Marco 0, `v0.1.0`): leitura de versículos
-offline em PT e EN. Veja [`SPEC.md`](SPEC.md) para a visão e
+Status: **Fase 1 — Leitura & busca concluída** (Marco 1, `v0.2.0`): leitura paralela,
+busca full-text, configuração e tema/cores. Veja [`SPEC.md`](SPEC.md) para a visão e
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap executável.
 
 ## Uso rápido
@@ -13,10 +13,20 @@ offline em PT e EN. Veja [`SPEC.md`](SPEC.md) para a visão e
 # 1. Gerar o banco com as versões livres (uma vez):
 cargo run -p xtask -- import --version kjv,alm1911 --db data/biblia.sqlite
 
-# 2. Ler uma passagem (PT ou EN, intervalos e capítulos):
+# 2. Ler (PT ou EN, intervalos, capítulos, várias versões lado a lado):
 cargo run -p biblia-cli -- read "John 3:16" --version kjv,alm1911 --db data/biblia.sqlite
 cargo run -p biblia-cli -- read "Gn 1.1-3" --version alm1911 --db data/biblia.sqlite
+
+# 3. Buscar (acento-insensível, ranqueado, com destaque e filtro de livro):
+cargo run -p biblia-cli -- search "graça" --version alm1911 --book Romanos --db data/biblia.sqlite
+
+# 4. Configurar preferências (versões padrão, idioma, tema):
+cargo run -p biblia-cli -- config set versions kjv,alm1911
+cargo run -p biblia-cli -- config list
 ```
+
+> Cores ANSI aparecem em terminal; desligam automaticamente em pipes, com
+> `--plain`, `NO_COLOR` ou `theme = none`.
 
 ## Princípios
 

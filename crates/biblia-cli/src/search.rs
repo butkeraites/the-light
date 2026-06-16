@@ -12,7 +12,7 @@ use biblia_core::search::SearchOptions;
 use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
 
-use crate::render::highlight_brackets;
+use crate::theme::Style;
 
 /// Argumentos do subcomando `search`.
 #[derive(Args)]
@@ -36,6 +36,10 @@ pub struct SearchArgs {
     /// Caminho do banco (padrão: diretório de dados do usuário).
     #[arg(long)]
     pub db: Option<PathBuf>,
+
+    /// Saída sem cor (destaque por colchetes). Cor também desliga em não-TTY/NO_COLOR.
+    #[arg(long)]
+    pub plain: bool,
 }
 
 const EXIT_OK: u8 = 0;
@@ -62,6 +66,7 @@ pub fn run(args: SearchArgs) -> ExitCode {
         eprintln!("aviso: configuração inválida ({e}); usando padrões.");
         Config::default()
     });
+    let style = Style::resolve(args.plain, &config.theme);
     let version = args.version.clone().unwrap_or_else(|| {
         config
             .versions
@@ -146,10 +151,11 @@ pub fn run(args: SearchArgs) -> ExitCode {
     let ref_w = refs.iter().map(|r| r.chars().count()).max().unwrap_or(0);
 
     for (hit, reference) in hits.iter().zip(&refs) {
+        let padded = format!("{reference:<ref_w$}");
         println!(
-            "  {:<ref_w$}   {}",
-            reference,
-            highlight_brackets(&hit.highlighted)
+            "  {}   {}",
+            style.reference(&padded),
+            style.highlight(&hit.highlighted)
         );
     }
 

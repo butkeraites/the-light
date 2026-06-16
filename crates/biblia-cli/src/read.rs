@@ -12,6 +12,7 @@ use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
 
 use crate::render::{self, VersionColumn};
+use crate::theme::Style;
 
 /// Carrega a config tolerando erro (avisa e usa padrões).
 fn load_config() -> Config {
@@ -35,6 +36,10 @@ pub struct ReadArgs {
     /// Caminho do banco (padrão: diretório de dados do usuário).
     #[arg(long)]
     pub db: Option<PathBuf>,
+
+    /// Saída sem cor (para pipes/scripts). Cor também desliga em não-TTY e NO_COLOR.
+    #[arg(long)]
+    pub plain: bool,
 }
 
 // Códigos de saída.
@@ -79,6 +84,7 @@ pub fn run(args: ReadArgs) -> ExitCode {
 
     // Versão da CLI tem prioridade; senão, usa `versions` do config.toml.
     let config = load_config();
+    let style = Style::resolve(args.plain, &config.theme);
     let version_spec = args
         .version
         .clone()
@@ -138,7 +144,7 @@ pub fn run(args: ReadArgs) -> ExitCode {
     }
 
     let found_any = columns.iter().any(|c| !c.verses.is_empty());
-    print!("{}", render_output(&columns));
+    print!("{}", render_output(&columns, &style));
 
     if had_error {
         ExitCode::from(EXIT_USAGE)
@@ -151,16 +157,16 @@ pub fn run(args: ReadArgs) -> ExitCode {
 
 /// Escolhe o modo de renderização: única, colunas lado a lado (TTY largo) ou
 /// blocos intercalados (pipe / terminal estreito).
-fn render_output(columns: &[VersionColumn]) -> String {
+fn render_output(columns: &[VersionColumn], style: &Style) -> String {
     if columns.len() == 1 {
-        return render::render_single(&columns[0]);
+        return render::render_single(&columns[0], style);
     }
     if std::io::stdout().is_terminal() {
-        if let Some(out) = render::render_columns(columns, terminal_width()) {
+        if let Some(out) = render::render_columns(columns, terminal_width(), style) {
             return out;
         }
     }
-    render::render_interleaved(columns)
+    render::render_interleaved(columns, style)
 }
 
 /// Largura atual do terminal, com piso e fallback sensatos.

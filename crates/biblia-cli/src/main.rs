@@ -6,6 +6,7 @@ mod config;
 mod read;
 mod render;
 mod search;
+mod theme;
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;

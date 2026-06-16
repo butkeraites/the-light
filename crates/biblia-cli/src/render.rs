@@ -2,17 +2,12 @@
 //!
 //! Funções puras (sem I/O) e testáveis: produzem `String`. A escolha entre
 //! colunas lado a lado e blocos intercalados é feita pelo chamador a partir da
-//! largura disponível.
+//! largura disponível. A cor é aplicada via [`Style`] apenas a trechos de
+//! largura já final, preservando o alinhamento.
 
 use std::collections::BTreeSet;
 
-use biblia_core::search::{HL_END, HL_START};
-
-/// Substitui os marcadores de destaque por colchetes (forma textual simples).
-/// O realce com cor é tratado na camada de tema (T1.4).
-pub fn highlight_brackets(s: &str) -> String {
-    s.replace(HL_START, "[").replace(HL_END, "]")
-}
+use crate::theme::Style;
 
 /// Largura mínima útil de uma coluna; abaixo disso caímos para blocos.
 pub const MIN_COL_WIDTH: usize = 18;
@@ -75,7 +70,6 @@ fn wrap_text(text: &str, w: usize) -> Vec<String> {
     for word in text.split_whitespace() {
         let wl = width_of(word);
         if wl > w {
-            // Palavra maior que a coluna: descarrega a linha atual e quebra a palavra.
             if current_len > 0 {
                 lines.push(std::mem::take(&mut current));
                 current_len = 0;
@@ -116,10 +110,20 @@ fn wrap_text(text: &str, w: usize) -> Vec<String> {
     lines
 }
 
+/// Cabeçalho "referência (rótulo)" colorido.
+fn header_line(col: &VersionColumn, style: &Style) -> String {
+    format!(
+        "{} ({})",
+        style.reference(&col.reference),
+        style.label(&col.label)
+    )
+}
+
 /// Renderiza uma única versão (número de versículo + texto).
-pub fn render_single(col: &VersionColumn) -> String {
+pub fn render_single(col: &VersionColumn, style: &Style) -> String {
     let mut out = String::new();
-    out.push_str(&format!("{} ({})\n", col.reference, col.label));
+    out.push_str(&header_line(col, style));
+    out.push('\n');
     if col.verses.is_empty() {
         out.push_str("  (nenhum versículo encontrado)\n");
         return out;
@@ -127,19 +131,18 @@ pub fn render_single(col: &VersionColumn) -> String {
     let nums: Vec<u16> = col.verses.iter().map(|(n, _)| *n).collect();
     let gw = gutter_width(&nums);
     for (n, text) in &col.verses {
-        out.push_str(&format!("  {n:>gw$}  {text}\n"));
+        let num = style.verse_number(&format!("{n:>gw$}"));
+        out.push_str(&format!("  {num}  {text}\n"));
     }
     out
 }
 
 /// Renderiza várias versões em blocos intercalados por versículo (sem colunas).
-/// Robusto para pipes e terminais estreitos.
-pub fn render_interleaved(cols: &[VersionColumn]) -> String {
+pub fn render_interleaved(cols: &[VersionColumn], style: &Style) -> String {
     let mut out = String::new();
-    // Cabeçalho: "ref1 (A) | ref2 (B)".
     let header = cols
         .iter()
-        .map(|c| format!("{} ({})", c.reference, c.label))
+        .map(|c| header_line(c, style))
         .collect::<Vec<_>>()
         .join("  |  ");
     out.push_str(&header);
@@ -159,12 +162,13 @@ pub fn render_interleaved(cols: &[VersionColumn]) -> String {
         for c in cols {
             let text = verse_text(c, *n).unwrap_or("");
             let num_field = if first {
-                format!("{n:>gw$}")
+                style.verse_number(&format!("{n:>gw$}"))
             } else {
                 " ".repeat(gw)
             };
             first = false;
-            out.push_str(&format!("{num_field}  {:<label_w$}  {text}\n", c.label));
+            let label = style.label(&format!("{:<label_w$}", c.label));
+            out.push_str(&format!("{num_field}  {label}  {text}\n"));
         }
     }
     out
@@ -172,14 +176,14 @@ pub fn render_interleaved(cols: &[VersionColumn]) -> String {
 
 /// Renderiza várias versões lado a lado, alinhadas por versículo, com quebra de
 /// linha. Devolve `None` se a largura não comportar colunas mínimas.
-pub fn render_columns(cols: &[VersionColumn], width: usize) -> Option<String> {
+pub fn render_columns(cols: &[VersionColumn], width: usize, style: &Style) -> Option<String> {
     let n = cols.len();
     if n == 0 {
         return Some(String::new());
     }
     let nums = union_numbers(cols);
     let gw = gutter_width(&nums);
-    let prefix = gw + 2; // medianiz + 2 espaços
+    let prefix = gw + 2;
     let sep_total = width_of(SEP) * n.saturating_sub(1);
     let avail = width.saturating_sub(prefix + sep_total);
     let col_w = avail / n;
@@ -195,10 +199,10 @@ pub fn render_columns(cols: &[VersionColumn], width: usize) -> Option<String> {
         out.push('\n');
     };
 
-    // Cabeçalho: rótulo + referência por coluna.
+    // Cabeçalho: célula "rótulo — referência" preenchida e então colorida.
     let head_cells: Vec<String> = cols
         .iter()
-        .map(|c| fit(&format!("{} — {}", c.label, c.reference), col_w))
+        .map(|c| style.reference(&fit(&format!("{} — {}", c.label, c.reference), col_w)))
         .collect();
     push_line(&" ".repeat(prefix), &head_cells);
 
@@ -216,7 +220,7 @@ pub fn render_columns(cols: &[VersionColumn], width: usize) -> Option<String> {
         let rows = wrapped.iter().map(Vec::len).max().unwrap_or(1);
         for r in 0..rows {
             let gutter = if r == 0 {
-                format!("{num:>gw$}  ")
+                format!("{}  ", style.verse_number(&format!("{num:>gw$}")))
             } else {
                 " ".repeat(prefix)
             };
@@ -278,7 +282,7 @@ mod tests {
     #[test]
     fn single_version_format() {
         let c = col("KJV", "John 3:16", &[(16, "For God so loved the world")]);
-        let out = render_single(&c);
+        let out = render_single(&c, &Style::plain());
         assert!(out.contains("John 3:16 (KJV)"));
         assert!(out.contains("  16  For God so loved the world"));
     }
@@ -286,7 +290,7 @@ mod tests {
     #[test]
     fn single_empty_shows_notice() {
         let c = col("KJV", "John 99:1", &[]);
-        assert!(render_single(&c).contains("nenhum versículo encontrado"));
+        assert!(render_single(&c, &Style::plain()).contains("nenhum versículo encontrado"));
     }
 
     #[test]
@@ -301,18 +305,14 @@ mod tests {
             "João 3.16-17",
             &[(16, "amou o mundo"), (17, "enviou o Filho")],
         );
-        let out = render_interleaved(&[a, b]);
-        // Cada versículo agrupa as duas versões.
-        let lines: Vec<&str> = out.lines().collect();
-        // header + (blank + 2) * 2
+        let out = render_interleaved(&[a, b], &Style::plain());
         assert!(out.contains("loved the world"));
         assert!(out.contains("amou o mundo"));
-        // A linha do verso 16 KJV vem antes da do verso 17.
         let pos16 = out.find("loved the world").unwrap();
         let pos17 = out.find("sent the Son").unwrap();
         assert!(pos16 < pos17);
-        assert!(lines
-            .iter()
+        assert!(out
+            .lines()
             .any(|l| l.contains("KJV") && l.contains("loved the world")));
     }
 
@@ -328,13 +328,10 @@ mod tests {
             "João 3.16",
             &[(16, "Porque Deus amou o mundo de tal maneira")],
         );
-        let out = render_columns(&[a, b], 60).expect("largura suficiente");
-        // Cabeçalho com os dois rótulos.
+        let out = render_columns(&[a, b], 60, &Style::plain()).expect("largura suficiente");
         assert!(out.contains("KJV"));
         assert!(out.contains("ALM"));
-        // Número do versículo aparece no medianiz.
         assert!(out.lines().any(|l| l.trim_start().starts_with("16")));
-        // Ambos os textos presentes (possivelmente quebrados).
         assert!(out.contains("For God so loved"));
         assert!(out.contains("Porque Deus amou"));
     }
@@ -343,15 +340,14 @@ mod tests {
     fn columns_returns_none_when_too_narrow() {
         let a = col("KJV", "John 3:16", &[(16, "x")]);
         let b = col("ALM", "João 3.16", &[(16, "y")]);
-        // Largura 20 com 2 colunas → col_w < MIN_COL_WIDTH.
-        assert!(render_columns(&[a, b], 20).is_none());
+        assert!(render_columns(&[a, b], 20, &Style::plain()).is_none());
     }
 
     #[test]
     fn no_trailing_whitespace_in_columns() {
         let a = col("KJV", "John 3:16", &[(16, "short")]);
         let b = col("ALM", "João 3.16", &[(16, "curto")]);
-        let out = render_columns(&[a, b], 60).unwrap();
+        let out = render_columns(&[a, b], 60, &Style::plain()).unwrap();
         for line in out.lines() {
             assert_eq!(
                 line,

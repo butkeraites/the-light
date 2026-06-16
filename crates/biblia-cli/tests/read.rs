@@ -175,6 +175,24 @@ fn duplicate_version_is_printed_once() {
 }
 
 #[test]
+fn piped_output_has_no_ansi_escapes() {
+    // Saída capturada (não-TTY) deve sair sem códigos ANSI, mesmo sem --plain.
+    let (_dir, path) = seeded_db();
+    let out = biblia()
+        .args(["read", "John 3:16", "--version", "kjv", "--db"])
+        .arg(&path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        !out.contains(&0x1b),
+        "saída em pipe não deveria conter ESC/ANSI"
+    );
+}
+
+#[test]
 fn missing_passage_exits_not_found_with_notice() {
     let (_dir, path) = seeded_db();
     biblia()
