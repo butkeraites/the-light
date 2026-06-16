@@ -19,7 +19,7 @@ corrigidos: **(crítico)** `study --save` não persiste mais texto de versão pr
 `read` usa saída 1 (não 2) em versão desconhecida/falha parcial (ADR-0006); `EsvApiSource`
 devolve `Passage` vazia (não erro) em passagem sem texto, igual ao API.Bible; isolamento de
 `BIBLIA_SECRETS` nos testes de read/search/tui; testes de study/ask com versão protegida
-sem chave (sem rede). Suíte: 238 testes. (commit _pendente_)
+sem chave (sem rede). Suíte: 238 testes. (commit 9c08d68)
 
 ## Fase 5 — Camada de IA (BYOK)
 
