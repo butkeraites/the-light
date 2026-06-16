@@ -9,8 +9,11 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+directories = "6.0.0"
 regex = "1.12.4"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 
 [dev-dependencies]
+tempfile = "3.27.0"
