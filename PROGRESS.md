@@ -3,6 +3,12 @@
 > Uma linha por tarefa concluída e verde: ID, data, resumo, hash do commit.
 > Ver `IMPLEMENTATION_PLAN.md` §6 para a definição das tarefas.
 
+## Fase 2 — Estudo pessoal (offline)
+
+| Tarefa | Data | Resumo | Commit |
+|---|---|---|---|
+| T2.1 | 2026-06-16 | Highlights (`userdata/highlights.rs`): `highlight add/list/remove`, `highlights.json` legível e atômico, aparece no rodapé da leitura; `BIBLIA_DATA_DIR`; util atômico compartilhado; 5 testes core + 4 integração | _pendente_ |
+
 ## Fase 1 — Leitura & busca
 
 | Tarefa | Data | Resumo | Commit |

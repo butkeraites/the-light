@@ -57,10 +57,14 @@ fn seeded_db() -> (TempDir, PathBuf) {
 
 fn biblia() -> Command {
     let mut cmd = Command::cargo_bin("biblia").unwrap();
-    // Isola do config.toml real do desenvolvedor (caminho inexistente → padrões).
+    // Isola do config/dados reais do desenvolvedor (caminhos inexistentes → padrões).
     cmd.env(
         "BIBLIA_CONFIG",
         std::env::temp_dir().join("biblia_absent_config.toml"),
+    );
+    cmd.env(
+        "BIBLIA_DATA_DIR",
+        std::env::temp_dir().join("biblia_absent_data_dir"),
     );
     cmd
 }

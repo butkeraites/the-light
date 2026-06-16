@@ -3,6 +3,7 @@
 //! Subcomandos são adicionados tarefa a tarefa. Hoje: `read`.
 
 mod config;
+mod highlight;
 mod read;
 mod render;
 mod search;
@@ -27,6 +28,8 @@ enum Command {
     Search(search::SearchArgs),
     /// Lê/edita as preferências (`config.toml`).
     Config(config::ConfigArgs),
+    /// Marca versículos com cor/etiqueta.
+    Highlight(highlight::HighlightArgs),
 }
 
 fn main() -> ExitCode {
@@ -35,5 +38,6 @@ fn main() -> ExitCode {
         Command::Read(args) => read::run(args),
         Command::Search(args) => search::run(args),
         Command::Config(args) => config::run(args),
+        Command::Highlight(args) => highlight::run(args),
     }
 }

@@ -15,6 +15,8 @@ pub mod reference;
 pub mod search;
 pub mod source;
 pub mod store;
+pub mod userdata;
+pub mod util;
 
 /// Versão do crate, exposta para `--version` da CLI.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

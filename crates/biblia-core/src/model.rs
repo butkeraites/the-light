@@ -183,7 +183,7 @@ pub struct Translation {
 }
 
 /// Quais versículos de um capítulo uma referência abrange.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VerseRange {
     /// Um único versículo (`João 3.16`).
     Single(u16),
@@ -223,7 +223,7 @@ impl VerseRange {
 }
 
 /// Uma referência bíblica resolvida: livro canônico + capítulo + intervalo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Reference {
     /// Número canônico do livro, `1..=66`.
     pub book: u8,

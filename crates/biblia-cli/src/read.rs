@@ -7,9 +7,11 @@ use std::process::ExitCode;
 use clap::Args;
 
 use biblia_core::config::Config;
+use biblia_core::model::{Lang, Reference};
 use biblia_core::reference::{format_reference, parse_reference};
 use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
+use biblia_core::userdata::HighlightStore;
 
 use crate::render::{self, VersionColumn};
 use crate::theme::Style;
@@ -149,6 +151,7 @@ pub fn run(args: ReadArgs) -> ExitCode {
 
     let found_any = columns.iter().any(|c| !c.verses.is_empty());
     print!("{}", render_output(&columns, &style));
+    print_highlight_footer(&reference, &columns, config.language);
 
     if had_error {
         ExitCode::from(EXIT_USAGE)
@@ -171,6 +174,48 @@ fn render_output(columns: &[VersionColumn], style: &Style) -> String {
         }
     }
     render::render_interleaved(columns, style)
+}
+
+/// Imprime um rodapé com as marcações que cobrem os versículos exibidos.
+fn print_highlight_footer(reference: &Reference, columns: &[VersionColumn], lang: Lang) {
+    let Ok(store) = HighlightStore::load_default() else {
+        return;
+    };
+    // Versículos exibidos (união entre as versões).
+    let mut shown: Vec<u16> = columns
+        .iter()
+        .flat_map(|c| c.verses.iter().map(|(n, _)| *n))
+        .collect();
+    shown.sort_unstable();
+    shown.dedup();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    for v in shown {
+        for h in store.covering(reference.book, reference.chapter, v) {
+            if seen.insert(h.reference) {
+                found.push(h);
+            }
+        }
+    }
+    if found.is_empty() {
+        return;
+    }
+    println!();
+    println!("Marcações:");
+    for h in found {
+        let tag = h
+            .tag
+            .as_deref()
+            .map(|t| format!("  [{t}]"))
+            .unwrap_or_default();
+        println!(
+            "  {}  {}{}",
+            format_reference(&h.reference, lang),
+            h.color,
+            tag
+        );
+    }
 }
 
 /// Largura atual do terminal, com piso e fallback sensatos.
