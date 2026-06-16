@@ -11,7 +11,12 @@
 | T4.2 | 2026-06-16 | Export `.ics` (`plan ics`): VEVENT por dia (all-day), escape RFC 5545; calendário válido verificável | 813d0cf |
 
 **Marco 4** (2026-06-16): planos de leitura com acompanhamento. Tag `v0.5.0`.
-Suíte: 184 testes + 1 doctest, `clippy -D warnings` e `fmt` verdes.
+Suíte: 187 testes + 1 doctest, `clippy -D warnings` e `fmt` verdes.
+
+**Revisão adversarial pós-Marco 4** (2026-06-16): 9 achados → 6 confirmados → corrigidos:
+`plan start` exige `--force` p/ sobrescrever; `status` faz clamp de `completed`;
+`.ics` com line folding RFC 5545. (Achado de "escapar aspas" rejeitado: o RFC não
+escapa aspas em valores TEXT.) (commit 6037eb4)
 
 **Revisão adversarial pós-Marco 3** (2026-06-16): 24 achados → 10 confirmados (3 positivos) →
 corrigidos: navegação atômica da TUI (estado consistente em falha), guarda de janela
