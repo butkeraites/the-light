@@ -51,3 +51,8 @@ pub fn highlights_path() -> Result<PathBuf> {
 pub fn notes_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("notes"))
 }
+
+/// Diretório dos estudos de IA (`studies/`, fase 5).
+pub fn studies_dir() -> Result<PathBuf> {
+    Ok(data_dir()?.join("studies"))
+}

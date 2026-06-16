@@ -9,7 +9,11 @@
 |---|---|---|---|
 | T2.1 | 2026-06-16 | Highlights (`userdata/highlights.rs`): `highlight add/list/remove`, `highlights.json` legível e atômico, aparece no rodapé da leitura; `BIBLIA_DATA_DIR`; util atômico compartilhado; 5 testes core + 4 integração | c2b10fa |
 | T2.2 | 2026-06-16 | Notas (`userdata/notes.rs`): `note add/edit/show/list/remove`, uma `.md` por nota, `$EDITOR`, render Markdown (`md.rs` via pulldown-cmark), rodapé na leitura; 5 testes core + 3 unit md + 5 integração | 357e753 |
-| T2.3 | 2026-06-16 | Referências cruzadas (`xref.rs` + `xtask import-xref`): OpenBible/TSK (CC-BY), 344.799 xrefs, OSIS via `book_number`, `biblia xref` com votos/limiar e texto; 4 core + 5 xtask + 4 integração | _pendente_ |
+| T2.3 | 2026-06-16 | Referências cruzadas (`xref.rs` + `xtask import-xref`): OpenBible/TSK (CC-BY), 344.799 xrefs, OSIS via `book_number`, `biblia xref` com votos/limiar e texto; 4 core + 5 xtask + 4 integração | 6e8fd8c |
+| T2.4 | 2026-06-16 | Export (`export.rs`): `export notes\|study --format md\|pdf` (PDF via pandoc), Markdown compilado por referência; 5 testes integração | _pendente_ |
+
+**Marco 2** (2026-06-16): estudo pessoal completo offline. Tag `v0.3.0`.
+Suíte: 152 testes + 1 doctest, `clippy -D warnings` e `fmt` verdes.
 
 ## Fase 1 — Leitura & busca
 

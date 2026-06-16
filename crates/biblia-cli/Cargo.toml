@@ -16,10 +16,10 @@ path = "src/main.rs"
 biblia-core = { path = "../biblia-core" }
 clap = { version = "4.5.61", features = ["derive"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
+tempfile = "3.27.0"
 terminal_size = "0.4.4"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"
 predicates = "3.1.4"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
-tempfile = "3.27.0"

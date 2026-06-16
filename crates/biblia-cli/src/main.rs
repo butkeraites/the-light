@@ -3,6 +3,7 @@
 //! Subcomandos são adicionados tarefa a tarefa. Hoje: `read`.
 
 mod config;
+mod export;
 mod highlight;
 mod md;
 mod note;
@@ -37,6 +38,8 @@ enum Command {
     Note(note::NoteArgs),
     /// Referências cruzadas de um versículo.
     Xref(xref::XrefArgs),
+    /// Exporta notas/estudos (Markdown ou PDF via pandoc).
+    Export(export::ExportArgs),
 }
 
 fn main() -> ExitCode {
@@ -48,5 +51,6 @@ fn main() -> ExitCode {
         Command::Highlight(args) => highlight::run(args),
         Command::Note(args) => note::run(args),
         Command::Xref(args) => xref::run(args),
+        Command::Export(args) => export::run(args),
     }
 }

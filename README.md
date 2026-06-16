@@ -3,8 +3,9 @@
 > Leitor de Bíblia hackeável para terminal, com estudo exegético assistido por IA
 > (lente denominacional configurável), dados locais e modelo *bring-your-own-key*.
 
-Status: **Fase 1 — Leitura & busca concluída** (Marco 1, `v0.2.0`): leitura paralela,
-busca full-text, configuração e tema/cores. Veja [`SPEC.md`](SPEC.md) para a visão e
+Status: **Fase 2 — Estudo pessoal concluída** (Marco 2, `v0.3.0`): highlights, notas
+em Markdown, referências cruzadas (TSK) e export — além da leitura/busca da Fase 1.
+Veja [`SPEC.md`](SPEC.md) para a visão e
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap executável.
 
 ## Uso rápido
@@ -23,7 +24,17 @@ cargo run -p biblia-cli -- search "graça" --version alm1911 --book Romanos --db
 # 4. Configurar preferências (versões padrão, idioma, tema):
 cargo run -p biblia-cli -- config set versions kjv,alm1911
 cargo run -p biblia-cli -- config list
+
+# 5. Estudo pessoal: marcações, notas, referências cruzadas, export:
+cargo run -p biblia-cli -- highlight add "Jo 3.16" --color yellow --tag salvação
+cargo run -p biblia-cli -- note add "Jo 3.16" "Versículo **central**."
+cargo run -p xtask -- import-xref --db data/biblia.sqlite   # referências cruzadas (TSK)
+cargo run -p biblia-cli -- xref "Rm 3.23" --db data/biblia.sqlite
+cargo run -p biblia-cli -- export notes --format md --output notas.md
 ```
+
+> Dados do usuário (notas `.md`, `highlights.json`) vivem em arquivos abertos e
+> versionáveis sob o diretório de dados do SO (ou `BIBLIA_DATA_DIR`).
 
 > Cores ANSI aparecem em terminal; desligam automaticamente em pipes, com
 > `--plain`, `NO_COLOR` ou `theme = none`.
