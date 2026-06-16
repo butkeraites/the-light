@@ -21,6 +21,7 @@ pub fn run(store: Store, version: TranslationId) -> Result<()> {
     terminal::install_panic_hook();
     let mut guard = terminal::TerminalGuard::new()?;
     let mut app = App::new(store, version)?;
+    app.load_userdata();
 
     while !app.should_quit {
         guard.terminal.draw(|frame| ui::draw(frame, &mut app))?;
