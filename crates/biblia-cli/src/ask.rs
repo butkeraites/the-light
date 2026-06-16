@@ -10,7 +10,6 @@ use clap::Args;
 use biblia_core::ai;
 use biblia_core::config::Config;
 use biblia_core::reference::{format_reference, parse_reference};
-use biblia_core::source::EmbeddedSource;
 
 use crate::ai_common;
 
@@ -64,12 +63,11 @@ pub fn run(args: AskArgs) -> ExitCode {
                 Ok(s) => s,
                 Err(code) => return code,
             };
-            let src = EmbeddedSource::new(&store);
             let passage = match ai_common::resolve_passage(
-                &src,
+                &store,
+                &config,
                 &reference,
                 args.version.as_deref(),
-                &config,
             ) {
                 Ok(p) => p,
                 Err(code) => return code,

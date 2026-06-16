@@ -73,6 +73,23 @@ vez de um subcomando `compare` — mais simples e sem ambiguidade no clap.
 reais exercitados só manualmente. `study`/`ask` degradam com erro amigável sem
 chave/provedor ou offline.
 
+## ADR-0010 — Conectores de versões protegidas (opt-in, ao vivo) · 2026-06-16
+**Contexto:** versões sob copyright (ARA/NVI/ESV/…) não podem ser embarcadas; o
+SPEC pede acesso só via conector com a credencial do usuário (§3, §5.2).
+**Decisão:** dois conectores que implementam `BibleSource` no core —
+`ApiBibleSource` (API.Bible, `data.content`, header `api-key`, ids USFM) e
+`EsvApiSource` (ESV API, `passages[0]`, `Authorization: Token`, mantém a
+atribuição "(ESV)"). Ambos `is_embeddable()=false`, `search→Unsupported`, e
+devolvem `Passage` efêmera (um bloco). HTTP via `source::http` com verificação
+de status **antes** do JSON (mesma lição do Marco 5). Mapeamento slug→fonte em
+`config.connectors` (`config connector add/list/remove`); a chave fica no
+cofre por tipo (`apibible`/`esv`). Resolução `crate::sources::resolve` (CLI):
+versão local primeiro, senão conector; sem chave → erro claro **sem** rede.
+`read`/`study`/`ask` passam a resolver versões locais **e** protegidas.
+**Consequência:** fronteira legal isolada no tipo; nada protegido é embarcado ou
+cacheado em massa; testes cobrem builders/parsing e o caminho sem-chave, nunca a
+rede. Comparação `--bible-id` exigido para API.Bible; ESV não precisa.
+
 ## ADR-0004 — Licença do código `MIT OR Apache-2.0` · 2026-06-15
 **Contexto:** o SPEC sugere MIT ou Apache-2.0; convenção do ecossistema Rust é dupla.
 **Decisão:** `MIT OR Apache-2.0` para o código. Dados bíblicos seguem suas próprias

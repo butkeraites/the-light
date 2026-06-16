@@ -127,7 +127,7 @@ fn unknown_version_exits_usage() {
         .assert()
         .failure()
         .code(2)
-        .stderr(contains("Versão desconhecida"));
+        .stderr(contains("versão desconhecida"));
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn mixed_known_and_unknown_version_exits_usage() {
         .failure()
         .code(2)
         .stdout(contains("For God so loved the world"))
-        .stderr(contains("Versão desconhecida"));
+        .stderr(contains("versão desconhecida"));
 }
 
 #[test]

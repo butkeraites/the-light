@@ -69,6 +69,7 @@ pub fn run(args: ReadArgs) -> ExitCode {
         Err(code) => return code,
     };
     let src = EmbeddedSource::new(&store);
+    let config = load_config();
 
     let translations = match src.translations() {
         Ok(t) => t,
@@ -77,7 +78,8 @@ pub fn run(args: ReadArgs) -> ExitCode {
             return ExitCode::from(EXIT_NOT_FOUND);
         }
     };
-    if translations.is_empty() {
+    // Sem versões locais E sem conectores não há nada a ler.
+    if translations.is_empty() && config.connectors.is_empty() {
         eprintln!(
             "Nenhuma versão importada. Gere o banco com:\n  \
              cargo run -p xtask -- import --version kjv,alm1911"
@@ -85,8 +87,6 @@ pub fn run(args: ReadArgs) -> ExitCode {
         return ExitCode::from(EXIT_NOT_FOUND);
     }
 
-    // Versão da CLI tem prioridade; senão, usa `versions` do config.toml.
-    let config = load_config();
     let style = Style::resolve(args.plain, &config.theme);
     let version_spec = args
         .version
@@ -108,23 +108,37 @@ pub fn run(args: ReadArgs) -> ExitCode {
 
     let mut columns: Vec<VersionColumn> = Vec::new();
     let mut had_error = false;
+    let mut used_connector = false;
 
     for slug in &requested {
         let tid = biblia_core::model::TranslationId::new(slug.clone());
-        let Some(meta) = translations.iter().find(|t| t.id == tid) else {
-            eprintln!(
-                "Versão desconhecida: `{slug}`. Disponíveis: {}",
-                translations
-                    .iter()
-                    .map(|t| t.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+        // Versão local primeiro; senão, conector protegido (ao vivo).
+        let source = match crate::sources::resolve(&store, &config, slug) {
+            Ok(s) => s,
+            Err(msg) => {
+                eprintln!("{msg}");
+                had_error = true;
+                continue;
+            }
+        };
+        let meta = match source.translations() {
+            Ok(ts) => ts.into_iter().find(|t| t.id == tid),
+            Err(e) => {
+                eprintln!("Erro ao consultar `{slug}`: {e}");
+                had_error = true;
+                continue;
+            }
+        };
+        let Some(meta) = meta else {
+            eprintln!("Versão desconhecida: `{slug}`.");
             had_error = true;
             continue;
         };
+        if !meta.embeddable {
+            used_connector = true;
+        }
 
-        let passage = match src.passage(&reference, &tid) {
+        let passage = match source.passage(&reference, &tid) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Erro ao ler `{slug}`: {e}");
@@ -154,6 +168,13 @@ pub fn run(args: ReadArgs) -> ExitCode {
     print!("{}", render_output(&columns, &style));
     print_highlight_footer(&reference, &columns, config.language);
     print_notes_footer(&reference, &columns, config.language, &style);
+
+    if used_connector {
+        eprintln!(
+            "(Versões protegidas vêm de conectores — uso pessoal; \
+             respeite os limites de citação da fonte.)"
+        );
+    }
 
     if had_error {
         ExitCode::from(EXIT_USAGE)

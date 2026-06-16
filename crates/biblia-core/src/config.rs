@@ -14,6 +14,27 @@ use crate::model::Lang;
 /// Chaves configuráveis (para `config set/get/list`).
 pub const KEYS: &[&str] = &["versions", "language", "theme", "font-size", "provider"];
 
+/// Conector de versão protegida (lida ao vivo via API, com chave do usuário).
+///
+/// Define o mapeamento de um slug (ex.: `ara`) para uma fonte remota. As chaves
+/// **não** ficam aqui — vivem no cofre (`ai::KeyStore`), por tipo de conector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Connector {
+    /// Slug usado em `--version` (ex.: `ara`, `esv`).
+    pub slug: String,
+    /// Tipo do conector: `apibible` ou `esv`.
+    pub kind: String,
+    /// Id da Bíblia na API.Bible (só para `kind = "apibible"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bible_id: Option<String>,
+    /// Nome de exibição (ex.: "Almeida Revista e Atualizada").
+    pub name: String,
+    /// Abreviação de exibição (ex.: "ARA").
+    pub abbrev: String,
+    /// Idioma do texto.
+    pub language: Lang,
+}
+
 /// Preferências do usuário.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,6 +50,9 @@ pub struct Config {
     /// Provedor de IA ativo (`anthropic`/`openai`/`ollama`); vazio = nenhum.
     /// Não é segredo; as chaves ficam fora do `config.toml` (ver `ai::KeyStore`).
     pub provider: String,
+    /// Conectores de versões protegidas (opt-in, lidas ao vivo).
+    #[serde(default)]
+    pub connectors: Vec<Connector>,
 }
 
 impl Default for Config {
@@ -39,6 +63,7 @@ impl Default for Config {
             theme: "auto".to_string(),
             font_size: None,
             provider: String::new(),
+            connectors: Vec::new(),
         }
     }
 }

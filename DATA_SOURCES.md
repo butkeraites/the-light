@@ -97,3 +97,21 @@
 **Substitutas aprovadas:** EN → BSB (`bsb`, CC0, sem atribuição) ou ASV (`asv`, PD). PT → Bíblia Livre (`blivre`, CC-BY, **com atribuição obrigatória**).
 
 **Procedimento de embarque:** fazer vendor/mirror de cada arquivo escolhido no repositório, fixar por commit SHA / tag de release (já feito para ALM1911 = v1.0.0), e não buscar "master" ao vivo em runtime.
+
+---
+
+## 4. Conectores de versões protegidas (Phase 6) — **NUNCA embarcadas**
+
+Versões sob copyright (ARA/ARC/NTLH/NVI/ACF em PT; ESV/NIV/NASB/CSB/NLT em EN)
+**não são embarcadas nem cacheadas em massa**. São lidas **ao vivo** sob a
+credencial do próprio usuário, que aceita os termos de cada API. A camada de
+fontes (`source::BibleSource`) isola essa fronteira: conectores têm
+`is_embeddable() == false`, `license = Proprietary`, e a `Passage` devolvida é
+efêmera (exibição/citação pessoal).
+
+| Conector | API | Endpoint | Auth | Texto em | Observações |
+|---|---|---|---|---|---|
+| `apibible` | [API.Bible](https://scripture.api.bible) | `GET /v1/bibles/{bibleId}/passages/{passageId}` (USFM, ex.: `JHN.3.16`) | header `api-key` | `data.content` | Cobre ARA/NVI/etc. conforme o `bibleId` da conta do usuário. Texto puro (sem números/títulos/notas). |
+| `esv` | [ESV API (Crossway)](https://api.esv.org) | `GET /v3/passage/text/?q=<ref>` | header `Authorization: Token <key>` | `passages[0]` | Mantemos `include-short-copyright=true` para preservar a atribuição "(ESV)" exigida; limite de citação ~500 versículos/≤25% da obra é responsabilidade do usuário. |
+
+**Configuração (BYOK):** `biblia config connector add <slug> --kind <apibible|esv> [--bible-id <id>] --name "..." --abbrev <ABBR> --lang <pt|en>` mapeia um slug (ex.: `ara`) para a fonte; a chave vai no cofre `secrets.toml` (0600, fora do git) via `biblia config set-key <apibible|esv> <chave>`. Sem chave → indisponível com mensagem clara, **sem** chamada de rede. A busca full-text (`search`) é só local: conectores retornam `Unsupported`.

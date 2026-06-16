@@ -13,6 +13,7 @@ mod plan;
 mod read;
 mod render;
 mod search;
+mod sources;
 mod study;
 mod theme;
 mod tui;

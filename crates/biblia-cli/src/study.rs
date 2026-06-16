@@ -11,7 +11,6 @@ use clap::Args;
 use biblia_core::ai::{self, Denomination, StudyDepth, StudyRequest};
 use biblia_core::config::Config;
 use biblia_core::reference::{format_reference, parse_reference};
-use biblia_core::source::EmbeddedSource;
 use biblia_core::userdata;
 
 use crate::ai_common;
@@ -99,10 +98,9 @@ pub fn run(args: StudyArgs) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let src = EmbeddedSource::new(&store);
 
     let passage =
-        match ai_common::resolve_passage(&src, &reference, args.version.as_deref(), &config) {
+        match ai_common::resolve_passage(&store, &config, &reference, args.version.as_deref()) {
             Ok(p) => p,
             Err(code) => return code,
         };

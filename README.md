@@ -48,7 +48,20 @@ cargo run -p biblia-cli -- study "Ef 2.8-9" --lens presbiteriana --depth exegeti
 cargo run -p biblia-cli -- study "Ef 2.8-9" --lens batista,luterana --db data/biblia.sqlite  # compara lentes
 cargo run -p biblia-cli -- ask "Como Paulo define a graça?" --ref "Rm 3" --db data/biblia.sqlite
 cargo run -p biblia-cli -- study "Jo 1.1" --lens batista --provider mock   # demonstração sem rede/chave
+
+# 9. Versões protegidas (opt-in, lidas ao vivo com a SUA chave — nunca embarcadas):
+cargo run -p biblia-cli -- config connector add ara --kind apibible --bible-id <bibleId> --name "Almeida Revista e Atualizada" --abbrev ARA --lang pt
+cargo run -p biblia-cli -- config set-key apibible <chave-api.bible>
+cargo run -p biblia-cli -- read "Jo 3.16" --version kjv,ara --db data/biblia.sqlite   # livre + protegida lado a lado
+cargo run -p biblia-cli -- config connector add esv --kind esv --name "English Standard Version" --abbrev ESV --lang en
+cargo run -p biblia-cli -- config set-key esv <chave-esv>
+cargo run -p biblia-cli -- read "John 3:16" --version esv --db data/biblia.sqlite
 ```
+
+> Versões protegidas (ARA/NVI/ESV/…) **nunca são embarcadas nem cacheadas em
+> massa**: são buscadas ao vivo via conector (API.Bible/ESV) sob a credencial do
+> próprio usuário, que aceita os termos da API. Sem chave → indisponível com
+> mensagem clara (sem chamada de rede). Ver `DATA_SOURCES.md` §4.
 
 > Dados do usuário (notas `.md`, `highlights.json`, estudos `.md`) vivem em
 > arquivos abertos e versionáveis sob o diretório de dados do SO (ou `BIBLIA_DATA_DIR`).

@@ -3,6 +3,16 @@
 > Uma linha por tarefa concluída e verde: ID, data, resumo, hash do commit.
 > Ver `IMPLEMENTATION_PLAN.md` §6 para a definição das tarefas.
 
+## Fase 6 — Conectores de versões protegidas
+
+| Tarefa | Data | Resumo | Commit |
+|---|---|---|---|
+| T6.1 | 2026-06-16 | `ApiBibleSource` (API.Bible, opt-in): `data.content` via `passages/{USFM id}`, header `api-key`, texto puro; `is_embeddable=false`, `search→Unsupported`; `source::http` (status-first). Endpoints verificados em doc | _pendente_ |
+| T6.2 | 2026-06-16 | `EsvApiSource` (ESV API, opt-in): `passages[0]` via `?q=`, `Authorization: Token`, mantém atribuição "(ESV)". `config connector add/list/remove`, cofre por tipo, `set-key apibible/esv`; resolver `sources::resolve` (local→conector); `read`/`study`/`ask` leem versões protegidas; aviso de uso/citação | _pendente_ |
+
+**Marco 6** (2026-06-16): versões protegidas sob credencial do usuário (BYOK,
+nunca embarcadas/cacheadas). Tag `v0.7.0`. Suíte: ~236 testes, `clippy -D warnings` e `fmt` verdes.
+
 ## Fase 5 — Camada de IA (BYOK)
 
 | Tarefa | Data | Resumo | Commit |

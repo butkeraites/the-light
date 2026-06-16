@@ -4,9 +4,14 @@
 //! versões livres vêm de [`embedded::EmbeddedSource`] (SQLite local); versões
 //! protegidas virão de conectores opt-in em fases posteriores.
 
+pub mod apibible;
 pub mod embedded;
+pub mod esv;
+mod http;
 
+pub use apibible::ApiBibleSource;
 pub use embedded::EmbeddedSource;
+pub use esv::EsvApiSource;
 
 use crate::model::{Passage, Reference, SearchHit, Translation, TranslationId};
 use crate::search::SearchOptions;
@@ -23,6 +28,12 @@ pub enum SourceError {
     /// A tradução pedida não está disponível nesta fonte.
     #[error("versão desconhecida: {0}")]
     UnknownTranslation(String),
+    /// Erro de rede/HTTP num conector.
+    #[error("erro de rede: {0}")]
+    Http(String),
+    /// Operação não suportada por esta fonte (ex.: busca em conector).
+    #[error("operação não suportada por esta fonte: {0}")]
+    Unsupported(String),
 }
 
 /// Resultado da camada de fontes.

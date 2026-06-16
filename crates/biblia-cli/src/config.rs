@@ -4,8 +4,11 @@ use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
 
-use biblia_core::ai::{KeyStore, PROVIDERS};
-use biblia_core::config::Config;
+use biblia_core::ai::KeyStore;
+use biblia_core::config::{Config, Connector};
+
+/// Provedores válidos para `set-key`: IA + conectores de versões protegidas.
+const KEY_PROVIDERS: &[&str] = &["anthropic", "openai", "ollama", "apibible", "esv"];
 
 /// Argumentos do subcomando `config`.
 #[derive(Args)]
@@ -44,6 +47,42 @@ enum ConfigAction {
     },
     /// Lista os provedores que têm chave (sem mostrar as chaves).
     Keys,
+    /// Conectores de versões protegidas (lidas ao vivo via API).
+    Connector {
+        #[command(subcommand)]
+        action: ConnectorAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConnectorAction {
+    /// Adiciona/atualiza um conector: `config connector add ara --kind apibible --bible-id <id> --name "..." --abbrev ARA`.
+    Add {
+        /// Slug usado em `--version` (ex.: ara, esv).
+        slug: String,
+        /// Tipo: apibible | esv.
+        #[arg(long)]
+        kind: String,
+        /// Nome de exibição.
+        #[arg(long)]
+        name: String,
+        /// Abreviação de exibição.
+        #[arg(long)]
+        abbrev: String,
+        /// Idioma do texto (pt | en).
+        #[arg(long, default_value = "pt")]
+        lang: String,
+        /// Id da Bíblia na API.Bible (obrigatório p/ kind=apibible).
+        #[arg(long)]
+        bible_id: Option<String>,
+    },
+    /// Lista os conectores configurados.
+    List,
+    /// Remove um conector pelo slug.
+    Remove {
+        /// Slug a remover.
+        slug: String,
+    },
 }
 
 const EXIT_OK: u8 = 0;
@@ -59,15 +98,126 @@ pub fn run(args: ConfigArgs) -> ExitCode {
         ConfigAction::SetKey { provider, key } => set_key(&provider, &key),
         ConfigAction::RemoveKey { provider } => remove_key(&provider),
         ConfigAction::Keys => keys(),
+        ConfigAction::Connector { action } => connector(action),
     }
+}
+
+fn connector(action: ConnectorAction) -> ExitCode {
+    match action {
+        ConnectorAction::Add {
+            slug,
+            kind,
+            name,
+            abbrev,
+            lang,
+            bible_id,
+        } => connector_add(slug, kind, name, abbrev, lang, bible_id),
+        ConnectorAction::List => connector_list(),
+        ConnectorAction::Remove { slug } => connector_remove(&slug),
+    }
+}
+
+fn connector_add(
+    slug: String,
+    kind: String,
+    name: String,
+    abbrev: String,
+    lang: String,
+    bible_id: Option<String>,
+) -> ExitCode {
+    use std::str::FromStr;
+
+    let kind = kind.trim().to_ascii_lowercase();
+    if kind != "apibible" && kind != "esv" {
+        eprintln!("Tipo de conector inválido: `{kind}` (use: apibible, esv).");
+        return ExitCode::from(EXIT_USAGE);
+    }
+    if kind == "apibible" && bible_id.as_deref().unwrap_or("").trim().is_empty() {
+        eprintln!("`--bible-id` é obrigatório para kind=apibible.");
+        return ExitCode::from(EXIT_USAGE);
+    }
+    let language = match biblia_core::model::Lang::from_str(&lang) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Idioma inválido: {e}");
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    let slug = slug.trim().to_ascii_lowercase();
+    let conn = Connector {
+        slug: slug.clone(),
+        kind: kind.clone(),
+        bible_id: bible_id.filter(|s| !s.trim().is_empty()),
+        name,
+        abbrev,
+        language,
+    };
+
+    let mut cfg = match load() {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    // Substitui se o slug já existir.
+    cfg.connectors.retain(|c| c.slug != slug);
+    cfg.connectors.push(conn);
+    if let Err(e) = cfg.save() {
+        eprintln!("Erro ao gravar a configuração: {e}");
+        return ExitCode::from(EXIT_NOT_FOUND);
+    }
+    println!("ok: conector `{slug}` ({kind}) configurado.");
+    println!("Defina a chave com: biblia config set-key {kind} <chave>");
+    ExitCode::from(EXIT_OK)
+}
+
+fn connector_list() -> ExitCode {
+    let cfg = match load() {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    if cfg.connectors.is_empty() {
+        println!("Nenhum conector configurado.");
+        return ExitCode::from(EXIT_OK);
+    }
+    for c in &cfg.connectors {
+        let bid = c
+            .bible_id
+            .as_deref()
+            .map(|b| format!("  bible_id={b}"))
+            .unwrap_or_default();
+        println!(
+            "{}  [{}]  {} ({})  lang={}{bid}",
+            c.slug, c.kind, c.name, c.abbrev, c.language
+        );
+    }
+    ExitCode::from(EXIT_OK)
+}
+
+fn connector_remove(slug: &str) -> ExitCode {
+    let slug = slug.trim().to_ascii_lowercase();
+    let mut cfg = match load() {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let before = cfg.connectors.len();
+    cfg.connectors.retain(|c| c.slug != slug);
+    if cfg.connectors.len() == before {
+        println!("Nenhum conector `{slug}`.");
+        return ExitCode::from(EXIT_NOT_FOUND);
+    }
+    if let Err(e) = cfg.save() {
+        eprintln!("Erro ao gravar a configuração: {e}");
+        return ExitCode::from(EXIT_NOT_FOUND);
+    }
+    println!("Conector `{slug}` removido.");
+    ExitCode::from(EXIT_OK)
 }
 
 fn set_key(provider: &str, key: &str) -> ExitCode {
     let provider = provider.to_ascii_lowercase();
-    if !PROVIDERS.contains(&provider.as_str()) {
+    if !KEY_PROVIDERS.contains(&provider.as_str()) {
         eprintln!(
             "Provedor desconhecido: `{provider}` (use: {}).",
-            PROVIDERS.join(", ")
+            KEY_PROVIDERS.join(", ")
         );
         return ExitCode::from(EXIT_USAGE);
     }

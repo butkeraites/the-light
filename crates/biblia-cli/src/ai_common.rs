@@ -7,7 +7,6 @@ use biblia_core::ai::{build_provider, KeyStore, LlmProvider};
 use biblia_core::config::Config;
 use biblia_core::model::{Lang, Passage, Reference, TranslationId, VerseRange};
 use biblia_core::reference::format_reference;
-use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
 use biblia_core::xref;
 
@@ -58,26 +57,24 @@ pub fn resolve_provider(
     })
 }
 
-/// Resolve a passagem na versão pedida (CLI > config > kjv).
+/// Resolve a passagem na versão pedida (CLI > config > kjv), consultando
+/// versões locais e conectores protegidos (ver [`crate::sources::resolve`]).
 pub fn resolve_passage(
-    src: &EmbeddedSource,
+    store: &Store,
+    config: &Config,
     reference: &Reference,
     cli_version: Option<&str>,
-    config: &Config,
 ) -> Result<Passage, ExitCode> {
     let version = cli_version
         .map(str::to_string)
         .or_else(|| config.versions.first().cloned())
         .unwrap_or_else(|| "kjv".to_string());
+    let source = crate::sources::resolve(store, config, &version).map_err(|m| {
+        eprintln!("{m}");
+        ExitCode::from(EXIT_NOT_FOUND)
+    })?;
     let tid = TranslationId::new(&version);
-    match src.has_translation(&tid) {
-        Ok(true) => {}
-        _ => {
-            eprintln!("Versão `{version}` não encontrada no banco.");
-            return Err(ExitCode::from(EXIT_NOT_FOUND));
-        }
-    }
-    match src.passage(reference, &tid) {
+    match source.passage(reference, &tid) {
         Ok(p) if !p.verses.is_empty() => Ok(p),
         Ok(_) => {
             eprintln!("Passagem sem texto na versão `{version}`.");
