@@ -22,7 +22,7 @@ corrigidos: **(crítico)** providers checam o status HTTP antes de exigir JSON
 (não só o v.1); `study` multi-lente sinaliza falha parcial (saída ≠ 0 + aviso);
 `Secrets` com `Debug` que redige as chaves; `ask` reusa `numbered_passage` (sem
 braço morto) + marca xrefs vazios + avisa `--db` sem `--ref`; mensagens de
-"chave desconhecida" do `config` incluem `provider`. Suíte: 220 testes. (commit _pendente_)
+"chave desconhecida" do `config` incluem `provider`. Suíte: 220 testes. (commit 2ba32bd)
 
 ## Fase 4 — Planos de leitura
 
