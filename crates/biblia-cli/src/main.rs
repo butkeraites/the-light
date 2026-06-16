@@ -7,6 +7,7 @@ mod export;
 mod highlight;
 mod md;
 mod note;
+mod plan;
 mod read;
 mod render;
 mod search;
@@ -43,6 +44,8 @@ enum Command {
     Export(export::ExportArgs),
     /// Abre a interface de terminal (TUI).
     Tui(tui::TuiArgs),
+    /// Planos de leitura (cronológico/anual/temático) com progresso.
+    Plan(plan::PlanArgs),
 }
 
 fn main() -> ExitCode {
@@ -56,5 +59,6 @@ fn main() -> ExitCode {
         Command::Xref(args) => xref::run(args),
         Command::Export(args) => export::run(args),
         Command::Tui(args) => tui::run(args),
+        Command::Plan(args) => plan::run(args),
     }
 }

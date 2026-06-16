@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 biblia-core = { path = "../biblia-core" }
 biblia-tui = { version = "0.1.0", path = "../biblia-tui" }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.5.61", features = ["derive"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 shlex = "2.0.1"

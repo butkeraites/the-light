@@ -3,6 +3,13 @@
 > Uma linha por tarefa concluída e verde: ID, data, resumo, hash do commit.
 > Ver `IMPLEMENTATION_PLAN.md` §6 para a definição das tarefas.
 
+## Fase 4 — Planos de leitura
+
+| Tarefa | Data | Resumo | Commit |
+|---|---|---|---|
+| T4.1 | 2026-06-16 | Engine de planos (`userdata/plans.rs`): anual/NT/evangelhos a partir dos capítulos canônicos (1189), progresso por data (injetável) + persistência; `plan list/start/today/status/mark/reset`; 6 testes core + integração | _pendente_ |
+| T4.2 | 2026-06-16 | Export `.ics` (`plan ics`): VEVENT por dia (all-day), escape RFC 5545; calendário válido verificável | _pendente_ |
+
 ## Fase 3 — TUI (ratatui)
 
 | Tarefa | Data | Resumo | Commit |

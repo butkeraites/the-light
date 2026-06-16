@@ -8,9 +8,11 @@
 
 pub mod highlights;
 pub mod notes;
+pub mod plans;
 
 pub use highlights::{Highlight, HighlightStore};
 pub use notes::{Note, NoteStore};
+pub use plans::{Plan, PlanProgress, PlanStore};
 
 use std::path::PathBuf;
 
@@ -55,4 +57,9 @@ pub fn notes_dir() -> Result<PathBuf> {
 /// Diretório dos estudos de IA (`studies/`, fase 5).
 pub fn studies_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("studies"))
+}
+
+/// Diretório dos planos de leitura (`reading-plans/`).
+pub fn reading_plans_dir() -> Result<PathBuf> {
+    Ok(data_dir()?.join("reading-plans"))
 }

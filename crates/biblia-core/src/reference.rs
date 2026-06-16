@@ -646,9 +646,25 @@ pub const BOOKS: [BookInfo; 66] = [
     },
 ];
 
+/// Número de capítulos de cada livro, em ordem canônica (1..=66).
+/// Total = 1189 capítulos. Usado pelos planos de leitura (independe da versão).
+pub const CHAPTERS: [u16; 66] = [
+    50, 40, 27, 36, 34, 24, 21, 4, 31, 24, 22, 25, 29, 36, 10, 13, 10, 42, 150, 31, 12, 8, 66, 52,
+    5, 48, 12, 14, 3, 9, 1, 4, 7, 3, 3, 3, 2, 14, 4, 28, 16, 24, 21, 28, 16, 16, 13, 6, 6, 4, 4, 5,
+    3, 6, 4, 3, 1, 13, 5, 5, 3, 5, 1, 1, 1, 22,
+];
+
 /// Retorna os metadados de um livro pelo número canônico (`1..=66`).
 pub fn book_info(number: u8) -> Option<&'static BookInfo> {
     BOOKS.get(number.checked_sub(1)? as usize)
+}
+
+/// Número canônico de capítulos de um livro (`0` se fora de `1..=66`).
+pub fn chapters_in_book(number: u8) -> u16 {
+    number
+        .checked_sub(1)
+        .and_then(|i| CHAPTERS.get(i as usize).copied())
+        .unwrap_or(0)
 }
 
 /// Resolve um nome/abreviação de livro (PT ou EN, com ou sem acento) para o

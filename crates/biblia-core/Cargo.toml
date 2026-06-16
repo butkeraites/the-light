@@ -9,6 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock"] }
 directories = "6.0.0"
 regex = "1.12.4"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
