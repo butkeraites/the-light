@@ -40,10 +40,23 @@ cargo run -p biblia-cli -- tui --db data/biblia.sqlite
 cargo run -p biblia-cli -- plan start annual --year 2026
 cargo run -p biblia-cli -- plan today
 cargo run -p biblia-cli -- plan ics --output plano.ics   # importável no calendário
+
+# 8. Estudo com IA (opt-in, BYOK — sua própria chave, fora do git):
+cargo run -p biblia-cli -- config set provider anthropic
+cargo run -p biblia-cli -- config set-key anthropic sk-ant-...   # grava em secrets.toml (0600)
+cargo run -p biblia-cli -- study "Ef 2.8-9" --lens presbiteriana --depth exegetico --db data/biblia.sqlite
+cargo run -p biblia-cli -- study "Ef 2.8-9" --lens batista,luterana --db data/biblia.sqlite  # compara lentes
+cargo run -p biblia-cli -- ask "Como Paulo define a graça?" --ref "Rm 3" --db data/biblia.sqlite
+cargo run -p biblia-cli -- study "Jo 1.1" --lens batista --provider mock   # demonstração sem rede/chave
 ```
 
-> Dados do usuário (notas `.md`, `highlights.json`) vivem em arquivos abertos e
-> versionáveis sob o diretório de dados do SO (ou `BIBLIA_DATA_DIR`).
+> Dados do usuário (notas `.md`, `highlights.json`, estudos `.md`) vivem em
+> arquivos abertos e versionáveis sob o diretório de dados do SO (ou `BIBLIA_DATA_DIR`).
+
+> A IA é **opt-in e BYOK**: provedores `anthropic`/`openai`/`ollama` (local). A
+> chave fica num `secrets.toml` (`0600`, fora do git, ou `BIBLIA_SECRETS`), nunca
+> é ecoada. O estudo separa o **texto citado** (do acervo local, exato) da
+> **interpretação** (do modelo); prompts de lente são editáveis em `prompts/<lente>.md`.
 
 > Cores ANSI aparecem em terminal; desligam automaticamente em pipes, com
 > `--plain`, `NO_COLOR` ou `theme = none`.

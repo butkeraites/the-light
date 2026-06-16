@@ -59,6 +59,20 @@ interpretação, sinalizando divergências entre tradições.
 **Consequência:** a citação é sempre fiel; a lente é explícita; testes usam
 `MockLlmProvider` (sem rede), provedores reais só em teste manual documentado.
 
+## ADR-0009 — HTTP de IA via reqwest (rustls), sem SDK · 2026-06-16
+**Contexto:** o Rust não tem SDK oficial da Anthropic; os provedores (Anthropic/
+OpenAI/Ollama) precisam de chamadas HTTP. A skill `claude-api` recomenda HTTP
+direto para linguagens sem SDK.
+**Decisão:** `reqwest` *blocking* com `default-tls` (resolve para `rustls` +
+`rustls-platform-verifier` — sem OpenSSL/cmake, multiplataforma). Anthropic usa
+`claude-opus-4-8` com `thinking: adaptive`; extrai só os blocos `type=="text"`.
+Corpos de requisição e parsing são funções puras testadas; só `complete()` faz
+I/O. Comparação de lentes via `study --lens a,b` (lista separada por vírgula) em
+vez de um subcomando `compare` — mais simples e sem ambiguidade no clap.
+**Consequência:** testes nunca tocam a rede (usam `MockLlmProvider`); provedores
+reais exercitados só manualmente. `study`/`ask` degradam com erro amigável sem
+chave/provedor ou offline.
+
 ## ADR-0004 — Licença do código `MIT OR Apache-2.0` · 2026-06-15
 **Contexto:** o SPEC sugere MIT ou Apache-2.0; convenção do ecossistema Rust é dupla.
 **Decisão:** `MIT OR Apache-2.0` para o código. Dados bíblicos seguem suas próprias

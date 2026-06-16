@@ -8,9 +8,11 @@
 
 pub mod keys;
 pub mod prompts;
+pub mod providers;
 pub mod study;
 
 pub use keys::KeyStore;
+pub use providers::{build_provider, estimate_cost_usd};
 pub use study::{ask, study, StudyRequest, StudyResult};
 
 use std::str::FromStr;

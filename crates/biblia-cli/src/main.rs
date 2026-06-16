@@ -2,6 +2,8 @@
 //!
 //! Subcomandos são adicionados tarefa a tarefa. Hoje: `read`.
 
+mod ai_common;
+mod ask;
 mod config;
 mod export;
 mod highlight;
@@ -11,6 +13,7 @@ mod plan;
 mod read;
 mod render;
 mod search;
+mod study;
 mod theme;
 mod tui;
 mod xref;
@@ -46,6 +49,10 @@ enum Command {
     Tui(tui::TuiArgs),
     /// Planos de leitura (cronológico/anual/temático) com progresso.
     Plan(plan::PlanArgs),
+    /// Estudo exegético por lente denominacional (IA, BYOK).
+    Study(study::StudyArgs),
+    /// Pergunta livre ancorada numa referência (IA, BYOK).
+    Ask(ask::AskArgs),
 }
 
 fn main() -> ExitCode {
@@ -60,5 +67,7 @@ fn main() -> ExitCode {
         Command::Export(args) => export::run(args),
         Command::Tui(args) => tui::run(args),
         Command::Plan(args) => plan::run(args),
+        Command::Study(args) => study::run(args),
+        Command::Ask(args) => ask::run(args),
     }
 }

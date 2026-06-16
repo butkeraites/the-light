@@ -7,7 +7,14 @@
 
 | Tarefa | Data | Resumo | Commit |
 |---|---|---|---|
-| T5.1 | 2026-06-16 | Abstração `LlmProvider` + tipos (Denomination/StudyDepth) + `MockLlmProvider`; `KeyStore` (secrets.toml 0600, fora do git, `BIBLIA_SECRETS`); `config provider` + `config set-key/remove-key/keys`; ADR-0007/0008; 6 core + 3 integração | _pendente_ |
+| T5.1 | 2026-06-16 | Abstração `LlmProvider` + tipos (Denomination/StudyDepth) + `MockLlmProvider`; `KeyStore` (secrets.toml 0600, fora do git, `BIBLIA_SECRETS`); `config provider` + `config set-key/remove-key/keys`; ADR-0007/0008; 6 core + 3 integração | bf6bab8 |
+| T5.2 | 2026-06-16 | `ai/prompts.rs`: system prompt por lente (6 tradições) + profundidade, override por arquivo local (`BIBLIA_PROMPTS`/`prompts/<slug>.md`); `ask_system_prompt`; 6 testes | 4b687e9 |
+| T5.3 | 2026-06-16 | `ai/study.rs` (orquestração RAG leve: passagem + xrefs no contexto, separa texto citado da interpretação, `to_markdown`) + CLI `study "Ef 2.8-9" --lens <l> [--depth] [--save]`; estimativa tokens/custo; erros amigáveis sem chave/provedor | 4b687e9 |
+| T5.4 | 2026-06-16 | Comparar lentes via `study --lens a,b` (em vez de subcomando `compare`); `ask "..." --ref "Rm 3"` (RAG); 8 testes de integração (provedor `mock`) | _pendente_ |
+| T5.5 | 2026-06-16 | Provedores `anthropic` (HTTP direto, `claude-opus-4-8`, pensamento adaptativo), `openai`, `ollama` (local) + fábrica `build_provider` + `estimate_cost_usd`; corpos/parsing como funções puras testadas sem rede (9 testes) | _pendente_ |
+
+**Marco 5** (2026-06-16): estudo assistido por IA (BYOK), opt-in, anti-alucinação.
+Tag `v0.6.0`. Suíte: 218 testes, `clippy -D warnings` e `fmt` verdes.
 
 ## Fase 4 — Planos de leitura
 
