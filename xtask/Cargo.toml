@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+description = "Tarefas de build/import one-off (cargo xtask): importação de datasets livres."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+biblia-core = { path = "../crates/biblia-core" }
