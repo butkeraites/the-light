@@ -7,8 +7,11 @@
 //! exato) de **interpretação** (do modelo) — ver `SPEC.md` §6.2.
 
 pub mod keys;
+pub mod prompts;
+pub mod study;
 
 pub use keys::KeyStore;
+pub use study::{ask, study, StudyRequest, StudyResult};
 
 use std::str::FromStr;
 
