@@ -11,6 +11,7 @@
 
 pub mod model;
 pub mod reference;
+pub mod source;
 pub mod store;
 
 /// Versão do crate, exposta para `--version` da CLI.

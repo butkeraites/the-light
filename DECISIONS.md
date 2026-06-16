@@ -25,6 +25,20 @@ mais recente compatível) em vez de fixar minors do plano; registrar versões ef
 `Cargo.lock` (commitado, pois é uma aplicação).
 **Consequência:** menos churn de versão; reprodutibilidade garantida pelo lockfile.
 
+## ADR-0005 — Busca acento-insensível via FTS5, sem coluna `text_fold` · 2026-06-15
+**Contexto:** a pesquisa de datasets sugeriu uma coluna `text_fold` (NFD + strip de
+marcas) para busca PT sem acento.
+**Decisão:** usar o `verses_fts` com `tokenize='unicode61 remove_diacritics 2'`, que
+já dobra acentos nos dois lados (índice e query). Sem coluna extra nem dep de
+`unicode-normalization` na Fase 0.
+**Consequência:** schema do plano mantido; `graca`↔`graça`, `ceus`↔`céus` verificados.
+
+## ADR-0006 — Códigos de saída do `read` · 2026-06-15
+**Contexto:** a CLI precisa sinalizar erro de uso vs. nada encontrado.
+**Decisão:** `0` sucesso; `1` referência válida mas sem texto/versão; `2` referência
+inválida (erro de parsing). `EmbeddedSource` implementa `BibleSource` lendo do SQLite.
+**Consequência:** scripts podem distinguir os casos; testado via `assert_cmd`.
+
 ## ADR-0004 — Licença do código `MIT OR Apache-2.0` · 2026-06-15
 **Contexto:** o SPEC sugere MIT ou Apache-2.0; convenção do ecossistema Rust é dupla.
 **Decisão:** `MIT OR Apache-2.0` para o código. Dados bíblicos seguem suas próprias

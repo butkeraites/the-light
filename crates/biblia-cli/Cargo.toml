@@ -14,5 +14,10 @@ path = "src/main.rs"
 
 [dependencies]
 biblia-core = { path = "../biblia-core" }
+clap = { version = "4.5.61", features = ["derive"] }
 
 [dev-dependencies]
+assert_cmd = "2.1.2"
+predicates = "3.1.4"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+tempfile = "3.27.0"

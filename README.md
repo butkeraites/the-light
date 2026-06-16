@@ -3,8 +3,20 @@
 > Leitor de Bíblia hackeável para terminal, com estudo exegético assistido por IA
 > (lente denominacional configurável), dados locais e modelo *bring-your-own-key*.
 
-Status: **Fase 0 — Fundação** (em desenvolvimento). Veja [`SPEC.md`](SPEC.md) para a
-visão e [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap executável.
+Status: **Fase 0 — Fundação concluída** (Marco 0, `v0.1.0`): leitura de versículos
+offline em PT e EN. Veja [`SPEC.md`](SPEC.md) para a visão e
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap executável.
+
+## Uso rápido
+
+```sh
+# 1. Gerar o banco com as versões livres (uma vez):
+cargo run -p xtask -- import --version kjv,alm1911 --db data/biblia.sqlite
+
+# 2. Ler uma passagem (PT ou EN, intervalos e capítulos):
+cargo run -p biblia-cli -- read "John 3:16" --version kjv,alm1911 --db data/biblia.sqlite
+cargo run -p biblia-cli -- read "Gn 1.1-3" --version alm1911 --db data/biblia.sqlite
+```
 
 ## Princípios
 
