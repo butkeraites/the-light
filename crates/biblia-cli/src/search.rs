@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 
+use biblia_core::config::Config;
 use biblia_core::model::TranslationId;
 use biblia_core::reference::{book_number, format_reference};
 use biblia_core::search::SearchOptions;
@@ -20,8 +21,9 @@ pub struct SearchArgs {
     pub query: String,
 
     /// Versão onde buscar (slug), ex.: `alm1911`.
-    #[arg(short, long, default_value = "kjv")]
-    pub version: String,
+    /// Se omitido, usa a primeira de `versions` do `config.toml`.
+    #[arg(short, long)]
+    pub version: Option<String>,
 
     /// Restringe a um livro (nome/abreviação PT ou EN), ex.: `Romanos`.
     #[arg(short, long)]
@@ -55,7 +57,19 @@ pub fn run(args: SearchArgs) -> ExitCode {
             return ExitCode::from(EXIT_NOT_FOUND);
         }
     };
-    let tid = TranslationId::new(args.version.clone());
+    // Versão da CLI tem prioridade; senão, a primeira de `versions` do config.
+    let config = Config::load().unwrap_or_else(|e| {
+        eprintln!("aviso: configuração inválida ({e}); usando padrões.");
+        Config::default()
+    });
+    let version = args.version.clone().unwrap_or_else(|| {
+        config
+            .versions
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "kjv".to_string())
+    });
+    let tid = TranslationId::new(version.clone());
     let Some(meta) = translations.iter().find(|t| t.id == tid) else {
         if translations.is_empty() {
             eprintln!(
@@ -65,7 +79,7 @@ pub fn run(args: SearchArgs) -> ExitCode {
         } else {
             eprintln!(
                 "Versão desconhecida: `{}`. Disponíveis: {}",
-                args.version,
+                version,
                 translations
                     .iter()
                     .map(|t| t.id.as_str())

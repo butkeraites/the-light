@@ -2,6 +2,7 @@
 //!
 //! Subcomandos são adicionados tarefa a tarefa. Hoje: `read`.
 
+mod config;
 mod read;
 mod render;
 mod search;
@@ -23,6 +24,8 @@ enum Command {
     Read(read::ReadArgs),
     /// Busca full-text, ex.: `biblia search "graça" --version alm1911`.
     Search(search::SearchArgs),
+    /// Lê/edita as preferências (`config.toml`).
+    Config(config::ConfigArgs),
 }
 
 fn main() -> ExitCode {
@@ -30,5 +33,6 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Read(args) => read::run(args),
         Command::Search(args) => search::run(args),
+        Command::Config(args) => config::run(args),
     }
 }

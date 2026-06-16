@@ -6,11 +6,20 @@ use std::process::ExitCode;
 
 use clap::Args;
 
+use biblia_core::config::Config;
 use biblia_core::reference::{format_reference, parse_reference};
 use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
 
 use crate::render::{self, VersionColumn};
+
+/// Carrega a config tolerando erro (avisa e usa padrões).
+fn load_config() -> Config {
+    Config::load().unwrap_or_else(|e| {
+        eprintln!("aviso: configuração inválida ({e}); usando padrões.");
+        Config::default()
+    })
+}
 
 /// Argumentos do subcomando `read`.
 #[derive(Args)]
@@ -19,8 +28,9 @@ pub struct ReadArgs {
     pub reference: String,
 
     /// Versões a ler (slugs separados por vírgula), ex.: `kjv,alm1911`.
-    #[arg(short, long, default_value = "kjv")]
-    pub version: String,
+    /// Se omitido, usa `versions` do `config.toml`.
+    #[arg(short, long)]
+    pub version: Option<String>,
 
     /// Caminho do banco (padrão: diretório de dados do usuário).
     #[arg(long)]
@@ -67,10 +77,16 @@ pub fn run(args: ReadArgs) -> ExitCode {
         return ExitCode::from(EXIT_NOT_FOUND);
     }
 
+    // Versão da CLI tem prioridade; senão, usa `versions` do config.toml.
+    let config = load_config();
+    let version_spec = args
+        .version
+        .clone()
+        .unwrap_or_else(|| config.versions.join(","));
+
     // Versões pedidas, sem duplicatas, preservando a ordem informada.
     let mut seen = std::collections::HashSet::new();
-    let requested: Vec<String> = args
-        .version
+    let requested: Vec<String> = version_spec
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

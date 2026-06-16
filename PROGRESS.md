@@ -8,7 +8,8 @@
 | Tarefa | Data | Resumo | Commit |
 |---|---|---|---|
 | T1.1 | 2026-06-16 | Leitura paralela: colunas lado a lado (com quebra de linha) e blocos intercalados alinhados por versículo; módulo `render` (9 testes) | 05e7686 |
-| T1.2 | 2026-06-16 | Busca FTS5 (`search.rs` + subcomando): acento-insensível, BM25, AND de palavras, filtro de livro, destaque; 8 testes core + 6 integração | _pendente_ |
+| T1.2 | 2026-06-16 | Busca FTS5 (`search.rs` + subcomando): acento-insensível, BM25, AND de palavras, filtro de livro, destaque; 8 testes core + 6 integração | 70e31f5 |
+| T1.3 | 2026-06-16 | Config `config.toml` (XDG, env BIBLIA_CONFIG): `config set/get/list`; read/search usam versões padrão; 6 testes core + 6 integração | _pendente_ |
 
 ## Fase 0 — Fundação
 

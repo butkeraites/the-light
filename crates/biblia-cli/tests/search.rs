@@ -44,7 +44,12 @@ fn seeded_db() -> (TempDir, PathBuf) {
 }
 
 fn biblia() -> Command {
-    Command::cargo_bin("biblia").unwrap()
+    let mut cmd = Command::cargo_bin("biblia").unwrap();
+    cmd.env(
+        "BIBLIA_CONFIG",
+        std::env::temp_dir().join("biblia_absent_config.toml"),
+    );
+    cmd
 }
 
 #[test]
