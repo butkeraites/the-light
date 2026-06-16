@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 
-use biblia_core::model::{Passage, Translation, TranslationId, VerseRange};
+use biblia_core::model::{Passage, Translation, TranslationId};
 use biblia_core::reference::{format_reference, parse_reference};
 use biblia_core::source::{BibleSource, EmbeddedSource};
 use biblia_core::store::Store;
@@ -62,15 +62,19 @@ pub fn run(args: ReadArgs) -> ExitCode {
         return ExitCode::from(EXIT_NOT_FOUND);
     }
 
+    // Versões pedidas, sem duplicatas, preservando a ordem informada.
+    let mut seen = std::collections::HashSet::new();
     let requested: Vec<String> = args
         .version
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .filter(|s| seen.insert(s.clone()))
         .collect();
 
     let mut printed = 0usize;
     let mut found_any = false;
+    let mut had_error = false;
 
     for slug in &requested {
         let tid = TranslationId::new(slug.clone());
@@ -83,6 +87,7 @@ pub fn run(args: ReadArgs) -> ExitCode {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+            had_error = true;
             continue;
         };
 
@@ -90,6 +95,7 @@ pub fn run(args: ReadArgs) -> ExitCode {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Erro ao ler `{slug}`: {e}");
+                had_error = true;
                 continue;
             }
         };
@@ -104,7 +110,11 @@ pub fn run(args: ReadArgs) -> ExitCode {
         }
     }
 
-    if found_any {
+    // Uma versão pedida que não existe / falhou domina o código de saída: o
+    // usuário pediu algo que não pôde ser atendido.
+    if had_error {
+        ExitCode::from(EXIT_USAGE)
+    } else if found_any {
         ExitCode::from(EXIT_OK)
     } else {
         ExitCode::from(EXIT_NOT_FOUND)
@@ -135,10 +145,9 @@ fn print_passage(passage: &Passage, meta: &Translation) {
         return;
     }
     for v in &passage.verses {
-        let n = match v.reference.verses {
-            VerseRange::Single(n) => n,
-            _ => 0,
-        };
+        // Todo `Verse` de uma passagem carrega `VerseRange::Single`; `start()`
+        // devolve esse número.
+        let n = v.reference.verses.start().unwrap_or(0);
         println!("  {n:>3}  {}", v.text);
     }
 }

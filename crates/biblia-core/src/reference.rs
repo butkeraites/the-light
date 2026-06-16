@@ -292,7 +292,7 @@ pub const BOOKS: [BookInfo; 66] = [
         abbrev_en: "Hos",
         abbrev_pt: "Os",
         testament: Testament::Old,
-        aliases: &["hos", "oseias", "oseias", "hosea"],
+        aliases: &["hos", "oseias", "hosea"],
     },
     BookInfo {
         number: 29,
@@ -770,8 +770,10 @@ fn build_alias_map() -> HashMap<String, u8> {
 fn reference_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
+        // `\p{M}` (marcas combinantes) no corpo do nome permite entrada UTF-8
+        // decomposta (NFD); `normalize()` descarta essas marcas depois.
         Regex::new(
-            r"^\s*(?P<book>[123]?\s*\p{L}[\p{L}.\s]*?)\s*(?P<chap>\d+)(?:\s*[:.]\s*(?P<v1>\d+)(?:\s*-\s*(?P<v2>\d+))?)?\s*$",
+            r"^\s*(?P<book>[123]?\s*\p{L}[\p{L}\p{M}.\s]*?)\s*(?P<chap>\d+)(?:\s*[:.]\s*(?P<v1>\d+)(?:\s*-\s*(?P<v2>\d+))?)?\s*$",
         )
         .expect("regex de referência válida")
     })
@@ -974,6 +976,18 @@ mod tests {
         assert_eq!(book_number("II Coríntios"), Some(47));
         assert_eq!(book_number("I John"), Some(62));
         assert_eq!(book_number("III João"), Some(64));
+    }
+
+    #[test]
+    fn handles_decomposed_utf8_nfd_input() {
+        // "Coríntios" em NFD: 'i' seguido de acento agudo combinante (U+0301).
+        let nfd = "1 Cori\u{0301}ntios 13.4";
+        assert_eq!(
+            parse_reference(nfd).unwrap(),
+            r(46, 13, VerseRange::Single(4))
+        );
+        // "João" decomposto (a + til combinante U+0303).
+        assert_eq!(book_number("Joa\u{0303}o"), Some(43));
     }
 
     // ---- ≥20 formatos válidos ----

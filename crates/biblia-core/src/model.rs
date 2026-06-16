@@ -99,8 +99,20 @@ impl License {
     }
 
     /// `true` se a licença permite embarcar/redistribuir o texto no binário.
+    ///
+    /// Domínio público e CC0 são sempre livres. Entre as Creative Commons,
+    /// apenas variantes **sem** cláusula NonCommercial (`nc`) ou NoDerivatives
+    /// (`nd`) são consideradas livres para redistribuição — `cc-by` e `cc-by-sa`
+    /// passam; `cc-by-nc`, `cc-by-nd`, `cc-by-nc-sa` etc. não.
     pub fn is_embeddable(&self) -> bool {
-        matches!(self, License::PublicDomain | License::Cc0 | License::Cc(_))
+        match self {
+            License::PublicDomain | License::Cc0 => true,
+            License::Cc(s) => {
+                let s = s.to_ascii_lowercase();
+                !s.contains("nc") && !s.contains("nd")
+            }
+            License::Proprietary | License::Other(_) => false,
+        }
     }
 }
 
@@ -265,5 +277,35 @@ impl Passage {
     /// `true` se nenhum versículo foi encontrado para a referência.
     pub fn is_empty(&self) -> bool {
         self.verses.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embeddable_licenses() {
+        assert!(License::PublicDomain.is_embeddable());
+        assert!(License::Cc0.is_embeddable());
+        assert!(License::from("cc-by").is_embeddable());
+        assert!(License::from("cc-by-sa").is_embeddable());
+    }
+
+    #[test]
+    fn non_embeddable_licenses() {
+        // NonCommercial e NoDerivatives não são livres para redistribuição.
+        assert!(!License::from("cc-by-nc").is_embeddable());
+        assert!(!License::from("cc-by-nd").is_embeddable());
+        assert!(!License::from("cc-by-nc-sa").is_embeddable());
+        assert!(!License::Proprietary.is_embeddable());
+        assert!(!License::from("all-rights-reserved").is_embeddable());
+    }
+
+    #[test]
+    fn license_roundtrips_text() {
+        assert_eq!(License::from("public-domain"), License::PublicDomain);
+        assert_eq!(License::PublicDomain.as_str(), "public-domain");
+        assert_eq!(License::from("cc-by").as_str(), "cc-by");
     }
 }

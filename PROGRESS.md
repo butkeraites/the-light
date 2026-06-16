@@ -16,3 +16,8 @@
 
 **Marco 0 alcançado** (2026-06-15): ler um versículo offline em PT e EN. Tag `v0.1.0`.
 Suíte: 62 testes + 1 doctest, `clippy -D warnings` e `fmt` verdes.
+
+**Revisão adversarial pós-Marco 0** (2026-06-15): 27 achados → 9 confirmados → corrigidos
+os relevantes: código de saída do `read` em falha parcial de versão; dedup de versões;
+`License::is_embeddable` agora rejeita CC NC/ND; render de versículo via `start()`;
+entrada UTF-8 decomposta (NFD); alias duplicado. Suíte: 68 testes + 1 doctest verdes.

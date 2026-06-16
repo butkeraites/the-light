@@ -91,15 +91,48 @@ fn invalid_reference_exits_with_usage_code() {
 }
 
 #[test]
-fn unknown_version_exits_not_found() {
+fn unknown_version_exits_usage() {
     let (_dir, path) = seeded_db();
     biblia()
         .args(["read", "John 3:16", "--version", "zzz", "--db"])
         .arg(&path)
         .assert()
         .failure()
-        .code(1)
+        .code(2)
         .stderr(contains("Versão desconhecida"));
+}
+
+#[test]
+fn mixed_known_and_unknown_version_exits_usage() {
+    let (_dir, path) = seeded_db();
+    // kjv imprime, mas a versão inexistente faz o código de saída ser !=0.
+    biblia()
+        .args(["read", "John 3:16", "--version", "kjv,nonexistent", "--db"])
+        .arg(&path)
+        .assert()
+        .failure()
+        .code(2)
+        .stdout(contains("For God so loved the world"))
+        .stderr(contains("Versão desconhecida"));
+}
+
+#[test]
+fn duplicate_version_is_printed_once() {
+    let (_dir, path) = seeded_db();
+    let out = biblia()
+        .args(["read", "John 3:16", "--version", "kjv,kjv", "--db"])
+        .arg(&path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    assert_eq!(
+        text.matches("For God so loved the world").count(),
+        1,
+        "passagem deveria aparecer uma única vez para versões duplicadas"
+    );
 }
 
 #[test]
