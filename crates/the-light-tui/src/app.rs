@@ -1,11 +1,14 @@
 //! Estado da TUI e tratamento de teclas (lógica pura, testável).
 
+use std::sync::mpsc::Receiver;
+
 use anyhow::{anyhow, Result};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use the_light_core::ai::{self, build_provider, KeyStore, LlmProvider, PROVIDERS};
 use the_light_core::config::Config;
 use the_light_core::model::{Lang, Reference, SearchHit, TranslationId};
-use the_light_core::reference::{parse_reference, BOOKS};
+use the_light_core::reference::{format_reference, parse_reference, scan_references, BOOKS};
 use the_light_core::search::{self, SearchOptions};
 use the_light_core::source::{BibleSource, EmbeddedSource};
 use the_light_core::store::Store;
@@ -34,6 +37,8 @@ pub enum InputKind {
     GoTo,
     /// Busca full-text incremental.
     Search,
+    /// Pergunta livre à IA sobre o capítulo atual.
+    Ask,
 }
 
 /// Estado de uma entrada de texto (prompt inferior).
@@ -54,6 +59,139 @@ pub struct XrefNav {
     pub items: Vec<CrossRef>,
     /// Item selecionado.
     pub selected: usize,
+}
+
+/// Corpo do painel de pergunta à IA.
+#[derive(Debug, Clone)]
+pub enum AiBody {
+    /// Consulta em andamento (thread de background).
+    Pending,
+    /// Resposta recebida.
+    Answer(String),
+    /// Erro (sem provedor/chave, rede, etc.).
+    Error(String),
+}
+
+/// Overlay de pergunta à IA sobre o texto atual.
+#[derive(Debug, Clone)]
+pub struct AiPanel {
+    /// Rótulo da âncora (ex.: "Romanos 3").
+    pub reference_label: String,
+    /// Pergunta feita.
+    pub question: String,
+    /// Modelo usado (para rodapé/estimativa de custo).
+    pub model: String,
+    /// Estimativa de tokens de entrada (contexto + pergunta).
+    pub input_tokens: usize,
+    /// Estado/conteúdo do painel.
+    pub body: AiBody,
+    /// Referências bíblicas citadas na resposta (para "viagem rápida").
+    pub refs: Vec<Reference>,
+    /// Referência selecionada na lista de saltos.
+    pub ref_selected: usize,
+    /// Rolagem vertical da resposta.
+    pub scroll: u16,
+}
+
+impl AiPanel {
+    fn pending(label: String, question: String, model: String, input_tokens: usize) -> Self {
+        AiPanel {
+            reference_label: label,
+            question,
+            model,
+            input_tokens,
+            body: AiBody::Pending,
+            refs: Vec::new(),
+            ref_selected: 0,
+            scroll: 0,
+        }
+    }
+
+    fn error(label: String, question: String, msg: String) -> Self {
+        AiPanel {
+            reference_label: label,
+            question,
+            model: String::new(),
+            input_tokens: 0,
+            body: AiBody::Error(msg),
+            refs: Vec::new(),
+            ref_selected: 0,
+            scroll: 0,
+        }
+    }
+
+    fn with_outcome(
+        label: String,
+        question: String,
+        model: String,
+        input_tokens: usize,
+        outcome: Result<String, String>,
+    ) -> Self {
+        let (body, refs) = match outcome {
+            Ok(answer) => {
+                let refs = cited_refs(&answer);
+                (AiBody::Answer(answer), refs)
+            }
+            Err(e) => (AiBody::Error(e), Vec::new()),
+        };
+        AiPanel {
+            reference_label: label,
+            question,
+            model,
+            input_tokens,
+            body,
+            refs,
+            ref_selected: 0,
+            scroll: 0,
+        }
+    }
+}
+
+/// Extrai as referências citadas num texto, únicas e na ordem de aparição.
+pub(crate) fn cited_refs(answer: &str) -> Vec<Reference> {
+    let mut out: Vec<Reference> = Vec::new();
+    for sr in scan_references(answer) {
+        if !out.contains(&sr.reference) {
+            out.push(sr.reference);
+        }
+    }
+    out
+}
+
+/// Modo do modal de configuração de IA.
+#[derive(Debug, Clone)]
+pub enum SettingsMode {
+    /// Lista de provedores (navegação).
+    List,
+    /// Digitando a chave do provedor selecionado (buffer mascarado na tela).
+    EditKey(String),
+}
+
+/// Estado do modal de configuração de provedor/chaves (tecla `c`).
+#[derive(Debug, Clone)]
+pub struct Settings {
+    /// Provedor selecionado (índice em [`PROVIDERS`]).
+    pub selected: usize,
+    /// Para cada provedor de [`PROVIDERS`], se há chave no cofre.
+    pub has_key: Vec<bool>,
+    /// Modo atual (lista ou edição de chave).
+    pub mode: SettingsMode,
+}
+
+/// Estimativa grosseira de tokens (≈ 4 caracteres por token).
+fn est_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(4)
+}
+
+/// Executa a consulta de IA (usada pela thread e pelos testes). Estringe o erro
+/// para poder cruzar a fronteira do canal (`AiError` não é `Send`-amigável aqui).
+fn run_query(
+    provider: &dyn LlmProvider,
+    question: &str,
+    context: &str,
+    lang: Lang,
+) -> Result<String, String> {
+    ai::ask(provider, question, context, lang).map_err(|e| e.to_string())
 }
 
 /// Metadados de uma versão disponível.
@@ -97,6 +235,14 @@ pub struct App {
     pub config: Config,
     /// Overlay de ajuda (atalhos) visível.
     pub show_help: bool,
+    /// Overlay de pergunta à IA, se houver.
+    pub ai: Option<AiPanel>,
+    /// Canal de recepção do resultado da consulta de IA em andamento.
+    ai_rx: Option<Receiver<Result<String, String>>>,
+    /// Quadro do indicador de "consultando…" (avança em [`App::tick`]).
+    pub spinner: u8,
+    /// Modal de configuração de provedor/chaves, se aberto.
+    pub settings: Option<Settings>,
     /// Sai do loop quando `true`.
     pub should_quit: bool,
 }
@@ -141,6 +287,10 @@ impl App {
             notes: Vec::new(),
             config: Config::default(),
             show_help: false,
+            ai: None,
+            ai_rx: None,
+            spinner: 0,
+            settings: None,
             should_quit: false,
         };
         app.reload()?;
@@ -409,8 +559,303 @@ impl App {
         }
     }
 
+    /// Abre o prompt de pergunta livre à IA (ancorada no capítulo atual).
+    pub fn open_ask(&mut self) {
+        self.input = Some(Input {
+            kind: InputKind::Ask,
+            buffer: String::new(),
+            error: None,
+        });
+    }
+
+    /// Monta o contexto (RAG local) da pergunta: rótulo do capítulo, versículos
+    /// numerados e as referências cruzadas do versículo selecionado. Devolve
+    /// `(rótulo_da_âncora, contexto)`.
+    fn ai_context(&self) -> (String, String) {
+        let lang = self.lang();
+        let label = format!("{} {}", self.book_name(), self.chapter);
+        let mut context = format!("{label}:\n");
+        for (n, text) in &self.verses {
+            context.push_str(&format!("{n} {text}\n"));
+        }
+        let xrefs: Vec<String> = self
+            .current_xrefs()
+            .iter()
+            .map(|c| format_reference(&c.reference, lang))
+            .collect();
+        let related = if xrefs.is_empty() {
+            "(nenhuma)".to_string()
+        } else {
+            xrefs.join("; ")
+        };
+        context.push_str(&format!("\nReferências relacionadas: {related}"));
+        (label, context)
+    }
+
+    /// Submete a pergunta digitada: resolve provedor/chave, monta o contexto e
+    /// dispara a consulta. `mock` roda inline; os reais rodam em thread.
+    fn submit_ask(&mut self) {
+        let question = match self.input.as_ref() {
+            Some(i) if i.kind == InputKind::Ask => i.buffer.trim().to_string(),
+            _ => return,
+        };
+        self.input = None;
+        if question.is_empty() {
+            return;
+        }
+        let (label, context) = self.ai_context();
+        let lang = self.lang();
+        let name = self.config.provider.trim().to_ascii_lowercase();
+        if name.is_empty() {
+            self.ai = Some(AiPanel::error(
+                label,
+                question,
+                "nenhum provedor de IA configurado — pressione c para configurar".to_string(),
+            ));
+            return;
+        }
+        // anthropic/openai exigem chave; mock/ollama são locais.
+        let key = if name == "anthropic" || name == "openai" {
+            match KeyStore::open_default()
+                .ok()
+                .and_then(|ks| ks.get(&name).map(str::to_string))
+            {
+                Some(k) => Some(k),
+                None => {
+                    self.ai = Some(AiPanel::error(
+                        label,
+                        question,
+                        format!("sem chave para `{name}` — pressione c para configurar"),
+                    ));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let model = ai::providers::default_model(&name).to_string();
+        let input_tokens = est_tokens(&context) + est_tokens(&question);
+        // O provedor mock roda inline (instantâneo, offline): demo e testes.
+        if name == "mock" {
+            let outcome = match build_provider(&name, None, None) {
+                Ok(p) => run_query(p.as_ref(), &question, &context, lang),
+                Err(e) => Err(e.to_string()),
+            };
+            self.ai = Some(AiPanel::with_outcome(
+                label,
+                question,
+                model,
+                input_tokens,
+                outcome,
+            ));
+            return;
+        }
+        // Provedores reais bloqueiam (reqwest::blocking): rodam em thread para
+        // não congelar a UI; só `String`/`Lang` cruzam o canal (o `Store` não).
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (provider_name, q, ctx) = (name.clone(), question.clone(), context);
+        std::thread::spawn(move || {
+            let outcome = match build_provider(&provider_name, key, None) {
+                Ok(p) => run_query(p.as_ref(), &q, &ctx, lang),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(outcome);
+        });
+        self.ai = Some(AiPanel::pending(label, question, model, input_tokens));
+        self.ai_rx = Some(rx);
+        self.spinner = 0;
+    }
+
+    /// Drena o canal da consulta de IA em andamento (chamado a cada iteração do
+    /// loop). Atualiza o painel quando a resposta/erro chega.
+    pub fn poll_ai(&mut self) {
+        let Some(rx) = self.ai_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.ai_rx = None;
+                if let Some(panel) = self.ai.as_mut() {
+                    if matches!(panel.body, AiBody::Pending) {
+                        match outcome {
+                            Ok(answer) => {
+                                panel.refs = cited_refs(&answer);
+                                panel.ref_selected = 0;
+                                panel.body = AiBody::Answer(answer);
+                            }
+                            Err(e) => panel.body = AiBody::Error(e),
+                        }
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ai_rx = None;
+                if let Some(panel) = self.ai.as_mut() {
+                    if matches!(panel.body, AiBody::Pending) {
+                        panel.body = AiBody::Error("consulta interrompida".to_string());
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// Avança o indicador de "consultando…" (chamado nos ticks ociosos do loop).
+    pub fn tick(&mut self) {
+        if matches!(self.ai.as_ref().map(|p| &p.body), Some(AiBody::Pending)) {
+            self.spinner = self.spinner.wrapping_add(1);
+        }
+    }
+
+    /// Abre o modal de configuração de provedor/chaves (tecla `c`).
+    pub fn open_settings(&mut self) {
+        let have: Vec<String> = KeyStore::open_default()
+            .map(|ks| ks.list_providers())
+            .unwrap_or_default();
+        let has_key = PROVIDERS
+            .iter()
+            .map(|p| have.iter().any(|h| h.as_str() == *p))
+            .collect();
+        let active = self.config.provider.trim().to_ascii_lowercase();
+        let selected = PROVIDERS.iter().position(|p| *p == active).unwrap_or(0);
+        self.settings = Some(Settings {
+            selected,
+            has_key,
+            mode: SettingsMode::List,
+        });
+    }
+
+    fn handle_ai_key(&mut self, key: KeyEvent) {
+        // Salto diferido: a referência-alvo é resolvida sob o empréstimo do
+        // painel e aplicada depois (fecha o overlay + navega).
+        let mut jump: Option<Reference> = None;
+        if let Some(panel) = self.ai.as_mut() {
+            let n = panel.refs.len();
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.ai = None;
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('j') => panel.scroll = panel.scroll.saturating_add(1),
+                KeyCode::Up | KeyCode::Char('k') => panel.scroll = panel.scroll.saturating_sub(1),
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    panel.scroll = panel.scroll.saturating_add(10)
+                }
+                KeyCode::PageUp => panel.scroll = panel.scroll.saturating_sub(10),
+                // Seleciona entre as referências citadas.
+                KeyCode::Tab if n > 0 => panel.ref_selected = (panel.ref_selected + 1) % n,
+                KeyCode::BackTab if n > 0 => panel.ref_selected = (panel.ref_selected + n - 1) % n,
+                // Enter salta para a referência selecionada.
+                KeyCode::Enter => jump = panel.refs.get(panel.ref_selected).copied(),
+                // Dígitos 1–9: salto direto para a n-ésima referência citada.
+                KeyCode::Char(c @ '1'..='9') => {
+                    jump = panel.refs.get((c as u8 - b'1') as usize).copied();
+                }
+                _ => {}
+            }
+        }
+        if let Some(reference) = jump {
+            self.ai = None;
+            self.go_to(&reference);
+        }
+    }
+
+    fn handle_settings_key(&mut self, key: KeyEvent) {
+        // Ação diferida: evita conflito de empréstimo entre `self.settings` (que
+        // emprestamos para ler/editar) e `self.config`/`self.settings = None`.
+        enum Act {
+            None,
+            Close,
+            SetActive,
+            RemoveKey,
+            CommitKey(String),
+        }
+        let mut act = Act::None;
+        if let Some(settings) = self.settings.as_mut() {
+            // Trata os dois modos separadamente para nunca reatribuir
+            // `settings.mode` enquanto o buffer da edição está emprestado.
+            if matches!(settings.mode, SettingsMode::EditKey(_)) {
+                if let SettingsMode::EditKey(buffer) = &mut settings.mode {
+                    match key.code {
+                        KeyCode::Backspace => {
+                            buffer.pop();
+                        }
+                        KeyCode::Char(c) => buffer.push(c),
+                        KeyCode::Enter => act = Act::CommitKey(std::mem::take(buffer)),
+                        _ => {}
+                    }
+                }
+                if key.code == KeyCode::Esc {
+                    settings.mode = SettingsMode::List;
+                }
+            } else {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => act = Act::Close,
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if settings.selected + 1 < PROVIDERS.len() {
+                            settings.selected += 1;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        settings.selected = settings.selected.saturating_sub(1);
+                    }
+                    KeyCode::Enter => act = Act::SetActive,
+                    KeyCode::Char('e') => settings.mode = SettingsMode::EditKey(String::new()),
+                    KeyCode::Char('d') => act = Act::RemoveKey,
+                    _ => {}
+                }
+            }
+        }
+        match act {
+            Act::Close => self.settings = None,
+            Act::SetActive => {
+                if let Some(i) = self.settings.as_ref().map(|s| s.selected) {
+                    self.config.provider = PROVIDERS[i].to_string();
+                    let _ = self.config.save();
+                }
+            }
+            Act::RemoveKey => {
+                if let Some(i) = self.settings.as_ref().map(|s| s.selected) {
+                    let name = PROVIDERS[i].to_string();
+                    if let Ok(mut ks) = KeyStore::open_default() {
+                        let _ = ks.remove(&name);
+                    }
+                    if let Some(s) = self.settings.as_mut() {
+                        s.has_key[i] = false;
+                    }
+                }
+            }
+            Act::CommitKey(buf) => {
+                if let Some(i) = self.settings.as_ref().map(|s| s.selected) {
+                    let name = PROVIDERS[i].to_string();
+                    let trimmed = buf.trim();
+                    let ok = !trimmed.is_empty()
+                        && KeyStore::open_default()
+                            .and_then(|mut ks| ks.set(&name, trimmed))
+                            .is_ok();
+                    if let Some(s) = self.settings.as_mut() {
+                        if ok {
+                            s.has_key[i] = true;
+                        }
+                        s.mode = SettingsMode::List;
+                    }
+                }
+            }
+            Act::None => {}
+        }
+    }
+
     /// Processa uma tecla pressionada.
     pub fn handle_key(&mut self, key: KeyEvent) {
+        // Os modais capturam o teclado, em ordem de prioridade.
+        if self.settings.is_some() {
+            self.handle_settings_key(key);
+            return;
+        }
+        if self.ai.is_some() {
+            self.handle_ai_key(key);
+            return;
+        }
         // O overlay de ajuda captura o teclado: fecha com ?/Esc/q, ignora o resto.
         if self.show_help {
             if matches!(
@@ -441,6 +886,8 @@ impl App {
             KeyCode::Char('v') => self.cycle_version(),
             KeyCode::Char('x') => self.open_xrefs(),
             KeyCode::Char('t') => self.cycle_theme(),
+            KeyCode::Char('a') => self.open_ask(),
+            KeyCode::Char('c') => self.open_settings(),
             KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('g') => {
                 self.input = Some(Input {
@@ -546,6 +993,7 @@ impl App {
                     self.go_to(&reference);
                 }
             }
+            InputKind::Ask => self.submit_ask(),
         }
     }
 
@@ -870,5 +1318,214 @@ mod tests {
         app.handle_key(key(KeyCode::Char('q')));
         assert!(app.xref_nav.is_none());
         assert!(!app.should_quit, "q deve só fechar a lista, não encerrar");
+    }
+
+    // --- IA na TUI ---------------------------------------------------------
+
+    use std::sync::Mutex;
+    use the_light_core::ai::MockLlmProvider;
+
+    // Serializa os testes que mexem em variáveis de ambiente globais
+    // (`LIGHT_SECRETS`/`LIGHT_CONFIG`) para não interferirem entre si.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn ai_context_has_chapter_text_and_cross_refs() {
+        let app = seeded_app();
+        let (label, context) = app.ai_context();
+        assert_eq!(label, "Romans 3");
+        assert!(context.contains("23 For all have sinned"), "{context}");
+        assert!(context.contains("24 Being justified"), "{context}");
+        // A referência cruzada (Rm 3:23 → Rm 6:23) entra no contexto.
+        assert!(context.contains("Romans 6:23"), "{context}");
+    }
+
+    #[test]
+    fn run_query_uses_provider() {
+        let p = MockLlmProvider::new("resposta fixa");
+        let out = run_query(&p, "pergunta", "contexto", Lang::En);
+        assert_eq!(out.unwrap(), "resposta fixa");
+    }
+
+    #[test]
+    fn ask_with_mock_answers_inline() {
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.handle_key(key(KeyCode::Char('a')));
+        assert!(
+            matches!(app.input.as_ref().map(|i| i.kind), Some(InputKind::Ask)),
+            "a abre o prompt de pergunta"
+        );
+        type_str(&mut app, "o que e pecado?");
+        app.handle_key(key(KeyCode::Enter));
+        let panel = app.ai.as_ref().expect("painel de IA");
+        assert!(
+            matches!(panel.body, AiBody::Answer(_)),
+            "mock responde inline"
+        );
+        assert!(app.ai_rx.is_none(), "mock não usa thread/canal");
+        assert!(app.input.is_none(), "o prompt fecha ao enviar");
+    }
+
+    #[test]
+    fn ask_without_provider_shows_friendly_error() {
+        let mut app = seeded_app(); // provider vazio (padrão)
+        app.handle_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "pergunta");
+        app.handle_key(key(KeyCode::Enter));
+        match &app.ai.as_ref().unwrap().body {
+            AiBody::Error(msg) => assert!(msg.contains("provedor"), "{msg}"),
+            other => panic!("esperava erro amigável, veio {other:?}"),
+        }
+        assert!(app.ai_rx.is_none(), "erro local não dispara thread");
+    }
+
+    #[test]
+    fn ask_with_empty_question_does_nothing() {
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Enter)); // sem digitar
+        assert!(app.ai.is_none(), "pergunta vazia é ignorada");
+    }
+
+    #[test]
+    fn ai_overlay_captures_keys_and_esc_closes() {
+        let mut app = seeded_app();
+        let before = app.selected;
+        app.ai = Some(AiPanel {
+            reference_label: "Romans 3".into(),
+            question: "q".into(),
+            model: "mock-1".into(),
+            input_tokens: 0,
+            body: AiBody::Answer("linha".into()),
+            refs: Vec::new(),
+            ref_selected: 0,
+            scroll: 0,
+        });
+        // ↓ rola o overlay; NÃO move o cursor de versículo.
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.selected, before, "o overlay captura a navegação");
+        assert_eq!(app.ai.as_ref().unwrap().scroll, 1);
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.ai.is_none(), "Esc fecha o overlay");
+    }
+
+    #[test]
+    fn cited_refs_extracts_unique_in_order() {
+        let refs = cited_refs("Veja João 3:16 e Romanos 5:8, e de novo João 3:16.");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].book, 43); // João
+        assert_eq!(refs[1].book, 45); // Romanos
+    }
+
+    #[test]
+    fn ai_overlay_fast_travels_to_cited_ref() {
+        let mut app = seeded_app(); // começa em Romanos 3
+        let answer = "Compare com Romans 6:23.".to_string();
+        app.ai = Some(AiPanel {
+            reference_label: "Romans 3".into(),
+            question: "q".into(),
+            model: "mock-1".into(),
+            input_tokens: 0,
+            refs: cited_refs(&answer),
+            ref_selected: 0,
+            body: AiBody::Answer(answer),
+            scroll: 0,
+        });
+        assert_eq!(app.ai.as_ref().unwrap().refs.len(), 1);
+        app.handle_key(key(KeyCode::Char('1'))); // salta para a 1ª citada
+        assert!(app.ai.is_none(), "saltar fecha o overlay");
+        assert_eq!(app.book_number(), 45);
+        assert_eq!(app.chapter, 6);
+        assert_eq!(app.current_verse(), Some(23));
+    }
+
+    #[test]
+    fn ai_overlay_enter_jumps_to_selected_ref() {
+        let mut app = seeded_app();
+        let answer = "Romans 3:24 e Romans 6:23.".to_string();
+        app.ai = Some(AiPanel {
+            reference_label: "Romans 3".into(),
+            question: "q".into(),
+            model: "mock-1".into(),
+            input_tokens: 0,
+            refs: cited_refs(&answer),
+            ref_selected: 0,
+            body: AiBody::Answer(answer),
+            scroll: 0,
+        });
+        assert_eq!(app.ai.as_ref().unwrap().refs.len(), 2);
+        app.handle_key(key(KeyCode::Tab)); // seleciona a 2ª (Rm 6:23)
+        assert_eq!(app.ai.as_ref().unwrap().ref_selected, 1);
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.ai.is_none());
+        assert_eq!(app.chapter, 6);
+        assert_eq!(app.current_verse(), Some(23));
+    }
+
+    #[test]
+    fn settings_open_navigate_and_activate_provider() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_CONFIG", dir.path().join("config.toml"));
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        app.handle_key(key(KeyCode::Char('c')));
+        assert!(app.settings.is_some(), "c abre o modal de configuração");
+        app.handle_key(key(KeyCode::Down)); // anthropic(0) → openai(1)
+        app.handle_key(key(KeyCode::Enter)); // ativa
+        assert_eq!(app.config.provider, "openai");
+        assert!(app.settings.is_some(), "Enter ativa sem fechar o modal");
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.settings.is_none(), "Esc fecha o modal");
+
+        std::env::remove_var("LIGHT_CONFIG");
+        std::env::remove_var("LIGHT_SECRETS");
+    }
+
+    #[test]
+    fn settings_edit_key_saves_to_vault() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = dir.path().join("secrets.toml");
+        std::env::set_var("LIGHT_SECRETS", &secrets);
+        std::env::set_var("LIGHT_CONFIG", dir.path().join("config.toml"));
+
+        let mut app = seeded_app();
+        app.handle_key(key(KeyCode::Char('c'))); // abre (selected=0 anthropic)
+        app.handle_key(key(KeyCode::Char('e'))); // entra em EditKey
+        type_str(&mut app, "sk-secret-xyz");
+        app.handle_key(key(KeyCode::Enter)); // grava
+
+        let s = app.settings.as_ref().unwrap();
+        assert!(matches!(s.mode, SettingsMode::List), "volta para a lista");
+        assert!(s.has_key[0], "anthropic passa a ter chave");
+
+        // A chave foi gravada no cofre temporário (e só lá).
+        let ks = KeyStore::open(&secrets).unwrap();
+        assert_eq!(ks.get("anthropic"), Some("sk-secret-xyz"));
+
+        std::env::remove_var("LIGHT_SECRETS");
+        std::env::remove_var("LIGHT_CONFIG");
+    }
+
+    #[test]
+    fn settings_overlay_captures_navigation() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        let before = app.selected;
+        app.handle_key(key(KeyCode::Char('c')));
+        app.handle_key(key(KeyCode::Down)); // move o modal, não o cursor
+        assert_eq!(app.selected, before);
+        assert_eq!(app.settings.as_ref().unwrap().selected, 1);
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.settings.is_none());
+
+        std::env::remove_var("LIGHT_SECRETS");
     }
 }

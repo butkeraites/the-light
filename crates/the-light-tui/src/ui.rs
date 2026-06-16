@@ -12,11 +12,12 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+use the_light_core::ai::{estimate_cost_usd, PROVIDERS};
 use the_light_core::model::Lang;
-use the_light_core::reference::{format_reference, BOOKS};
+use the_light_core::reference::{format_reference, scan_references, BOOKS};
 use the_light_core::search::{HL_END, HL_START};
 
-use crate::app::{App, Focus, Input, InputKind};
+use crate::app::{AiBody, AiPanel, App, Focus, Input, InputKind, SettingsMode};
 use crate::theme::Palette;
 
 /// Bloco padrão: borda arredondada, respiro interno e título estilizado.
@@ -81,6 +82,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.show_help {
         draw_help(frame, area, &pal);
+    }
+    if app.ai.is_some() {
+        draw_ai_panel(frame, app, area, &pal);
+    }
+    if app.settings.is_some() {
+        draw_settings(frame, app, area, &pal);
     }
 }
 
@@ -404,6 +411,7 @@ fn draw_input(frame: &mut Frame, area: Rect, input: &Input, pal: &Palette, boxed
     let label = match input.kind {
         InputKind::GoTo => "ir para",
         InputKind::Search => "buscar",
+        InputKind::Ask => "perguntar",
     };
     let mut spans = vec![
         Span::styled("❯ ", pal.fg(pal.accent).add_modifier(Modifier::BOLD)),
@@ -447,7 +455,7 @@ fn draw_input(frame: &mut Frame, area: Rect, input: &Input, pal: &Palette, boxed
 /// Rodapé de atalhos (quando não há input ativo). Mostra o tema atual.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
     let hints = format!(
-        " ↑↓ versículo · n/p cap · v versão · / buscar · g ir · x refs · t tema [{}] · ? ajuda",
+        " ↑↓ versículo · n/p cap · v versão · a perguntar · c IA · / buscar · g ir · x refs · t tema [{}] · ? ajuda",
         app.theme()
     );
     frame.render_widget(Paragraph::new(hints).style(pal.fg(pal.dim)), area);
@@ -466,6 +474,8 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
         Line::from("  ← →         trocar de painel · Tab alterna foco"),
         Line::from("  Home/End    início / fim · PgUp/PgDn ±10"),
         Line::from("  v           trocar versão"),
+        Line::from("  a           perguntar à IA sobre o capítulo"),
+        Line::from("  c           configurar provedor/chaves de IA"),
         Line::from("  /           buscar (full-text)"),
         Line::from("  g           ir para referência (ex.: Jo 3.16)"),
         Line::from("  x           referências cruzadas"),
@@ -481,6 +491,230 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
         .border_style(pal.fg(pal.accent))
         .title(Line::from(Span::styled(
             " Ajuda ",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(blk), popup);
+}
+
+/// Overlay rolável com a pergunta/resposta da IA (tecla `a`).
+fn draw_ai_panel(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
+    let Some(panel) = &app.ai else {
+        return;
+    };
+    let w = (area.width * 4 / 5).clamp(20, 92);
+    let h = (area.height * 4 / 5).max(6);
+    let popup = centered_rect(w, h, area);
+
+    let blk = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
+        .border_style(pal.fg(pal.accent))
+        .title(Line::from(Span::styled(
+            format!(" Pergunta — {} ", panel.reference_label),
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )));
+    let inner = blk.inner(popup);
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("❯ ", pal.fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                panel.question.clone(),
+                pal.fg(pal.dim).add_modifier(Modifier::ITALIC),
+            ),
+        ]),
+        Line::from(""),
+    ];
+    match &panel.body {
+        AiBody::Pending => {
+            const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let sp = FRAMES[(app.spinner as usize) % FRAMES.len()];
+            lines.push(Line::from(Span::styled(
+                format!("{sp} consultando… (Esc cancela)"),
+                pal.fg(pal.dim),
+            )));
+        }
+        AiBody::Answer(answer) => {
+            // Realça inline cada referência citada no texto.
+            for l in answer.lines() {
+                lines.push(ref_highlighted_line(l, pal));
+            }
+            // Lista numerada de saltos rápidos (a "viagem rápida").
+            if !panel.refs.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Saltar para  (Tab seleciona · Enter/1-9 salta):",
+                    pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+                )));
+                for (i, r) in panel.refs.iter().enumerate() {
+                    let marker = if i < 9 {
+                        format!("[{}] ", i + 1)
+                    } else {
+                        "    ".to_string()
+                    };
+                    let label = format_reference(r, app.lang());
+                    let style = if i == panel.ref_selected {
+                        pal.selection_style()
+                    } else {
+                        pal.fg(pal.accent)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("  {marker}{label}"),
+                        style,
+                    )));
+                }
+            }
+        }
+        AiBody::Error(msg) => {
+            lines.push(Line::from(Span::styled(
+                format!("⚠ {msg}"),
+                pal.fg(pal.warn),
+            )));
+        }
+    }
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .scroll((panel.scroll, 0))
+            .block(blk),
+        popup,
+    );
+
+    // Rodapé (sobrescreve a última linha interna): modelo + estimativa.
+    if inner.height >= 1 {
+        let frect = Rect {
+            x: inner.x,
+            y: inner.y + inner.height - 1,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(ai_footer(panel)).style(pal.fg(pal.dim)),
+            frect,
+        );
+    }
+}
+
+/// Quebra uma linha de resposta em spans, realçando as referências citadas.
+fn ref_highlighted_line(src: &str, pal: &Palette) -> Line<'static> {
+    let scanned = scan_references(src);
+    if scanned.is_empty() {
+        return Line::from(src.to_string());
+    }
+    let style = pal
+        .fg(pal.accent)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut last = 0usize;
+    for sr in scanned {
+        if sr.range.start > last {
+            spans.push(Span::raw(src[last..sr.range.start].to_string()));
+        }
+        spans.push(Span::styled(src[sr.range.clone()].to_string(), style));
+        last = sr.range.end;
+    }
+    if last < src.len() {
+        spans.push(Span::raw(src[last..].to_string()));
+    }
+    Line::from(spans)
+}
+
+/// Rodapé do overlay de IA: modelo, tokens estimados e custo (quando conhecido).
+fn ai_footer(panel: &AiPanel) -> String {
+    let nav = if panel.refs.is_empty() {
+        "↑↓ rola · Esc fecha"
+    } else {
+        "Tab/1-9 salta · ↑↓ rola · Esc fecha"
+    };
+    if panel.model.is_empty() {
+        return nav.to_string();
+    }
+    let out = match &panel.body {
+        AiBody::Answer(a) => a.chars().count().div_ceil(4),
+        _ => 0,
+    };
+    match estimate_cost_usd(&panel.model, panel.input_tokens, out) {
+        Some(c) if c > 0.0 => format!(
+            "{} · ≈{}+{} tok · ≈${:.4} · {nav}",
+            panel.model, panel.input_tokens, out, c
+        ),
+        _ => format!(
+            "{} · ≈{}+{} tok · {nav}",
+            panel.model, panel.input_tokens, out
+        ),
+    }
+}
+
+/// Modal de configuração de provedor/chaves de IA (tecla `c`).
+fn draw_settings(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
+    let Some(settings) = &app.settings else {
+        return;
+    };
+    let active = app.config.provider.trim().to_ascii_lowercase();
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "Provedor de IA",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    for (i, name) in PROVIDERS.iter().enumerate() {
+        let is_sel = i == settings.selected;
+        let star = if active.as_str() == *name { "★" } else { " " };
+        let has_key = settings.has_key.get(i).copied().unwrap_or(false);
+        let keymark = if has_key {
+            "✓ chave salva"
+        } else {
+            "— sem chave"
+        };
+        let note = if *name == "ollama" { " (local)" } else { "" };
+        let cursor = if is_sel { "❯ " } else { "  " };
+        let style = if is_sel {
+            pal.selection_style()
+        } else {
+            pal.fg(pal.dim)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{cursor}{star} {name}{note}   {keymark}"),
+            style,
+        )));
+    }
+    lines.push(Line::from(""));
+    match &settings.mode {
+        SettingsMode::EditKey(buf) => {
+            let masked: String = "•".repeat(buf.chars().count());
+            lines.push(Line::from(vec![
+                Span::styled("chave: ", pal.fg(pal.accent).add_modifier(Modifier::BOLD)),
+                Span::raw(masked),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "  Enter grava · Esc cancela (a chave fica oculta)",
+                pal.fg(pal.dim),
+            )));
+        }
+        SettingsMode::List => {
+            lines.push(Line::from(Span::styled(
+                "  ↑↓ move · Enter ativa · e edita chave · d remove · Esc fecha",
+                pal.fg(pal.dim),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  ★ ativo · ✓ chave salva no cofre (0600, fora do git)",
+                pal.fg(pal.dim),
+            )));
+        }
+    }
+
+    let popup = centered_rect(64, lines.len() as u16 + 2, area);
+    let blk = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
+        .border_style(pal.fg(pal.accent))
+        .title(Line::from(Span::styled(
+            " Configurar IA ",
             pal.fg(pal.accent).add_modifier(Modifier::BOLD),
         )));
     frame.render_widget(Clear, popup);
@@ -738,5 +972,109 @@ mod tests {
         app.config.theme = "light".into();
         let text = render(&mut app);
         assert!(text.contains("t tema [light]"), "{text}");
+    }
+
+    // --- Overlays de IA ----------------------------------------------------
+
+    #[test]
+    fn ai_panel_renders_question_and_answer() {
+        let mut app = seeded_app();
+        app.ai = Some(AiPanel {
+            reference_label: "Romans 3".into(),
+            question: "o que significa?".into(),
+            model: "claude-opus-4-8".into(),
+            input_tokens: 120,
+            body: AiBody::Answer("Resposta de teste do modelo.".into()),
+            refs: Vec::new(),
+            ref_selected: 0,
+            scroll: 0,
+        });
+        let text = render(&mut app);
+        assert!(text.contains("Pergunta — Romans 3"), "{text}");
+        assert!(text.contains("Resposta de teste"), "{text}");
+        // Rodapé com o modelo (estimativa de custo).
+        assert!(text.contains("claude-opus-4-8"), "{text}");
+    }
+
+    #[test]
+    fn ai_panel_lists_cited_references_for_fast_travel() {
+        let mut app = seeded_app();
+        let answer = "Veja Romans 6:23 e Romans 3:24.".to_string();
+        app.ai = Some(AiPanel {
+            reference_label: "Romans 3".into(),
+            question: "q".into(),
+            model: "mock-1".into(),
+            input_tokens: 0,
+            refs: crate::app::cited_refs(&answer),
+            ref_selected: 0,
+            body: AiBody::Answer(answer),
+            scroll: 0,
+        });
+        let text = render(&mut app);
+        assert!(text.contains("Saltar para"), "{text}");
+        assert!(text.contains("[1] Romans 6:23"), "{text}");
+        assert!(text.contains("[2] Romans 3:24"), "{text}");
+    }
+
+    #[test]
+    fn ai_panel_renders_pending_and_error() {
+        let mut app = seeded_app();
+        app.ai = Some(AiPanel {
+            reference_label: "Romans 3".into(),
+            question: "q".into(),
+            model: String::new(),
+            input_tokens: 0,
+            body: AiBody::Pending,
+            refs: Vec::new(),
+            ref_selected: 0,
+            scroll: 0,
+        });
+        assert!(render(&mut app).contains("consultando"));
+
+        app.ai = Some(AiPanel {
+            reference_label: "Romans 3".into(),
+            question: "q".into(),
+            model: String::new(),
+            input_tokens: 0,
+            body: AiBody::Error("sem chave para `anthropic`".into()),
+            refs: Vec::new(),
+            ref_selected: 0,
+            scroll: 0,
+        });
+        assert!(render(&mut app).contains("sem chave"));
+    }
+
+    #[test]
+    fn settings_modal_lists_providers_with_markers() {
+        let mut app = seeded_app();
+        app.config.provider = "openai".into();
+        app.settings = Some(crate::app::Settings {
+            selected: 1,
+            has_key: vec![true, false, false],
+            mode: SettingsMode::List,
+        });
+        let text = render(&mut app);
+        assert!(text.contains("Configurar IA"), "{text}");
+        for p in ["anthropic", "openai", "ollama"] {
+            assert!(text.contains(p), "faltou {p}:\n{text}");
+        }
+        assert!(text.contains('★'), "marca de provedor ativo:\n{text}");
+        assert!(text.contains('✓'), "marca de chave salva:\n{text}");
+    }
+
+    #[test]
+    fn settings_modal_masks_key_input() {
+        let mut app = seeded_app();
+        app.settings = Some(crate::app::Settings {
+            selected: 0,
+            has_key: vec![false, false, false],
+            mode: SettingsMode::EditKey("sk-secret-123".into()),
+        });
+        let text = render(&mut app);
+        assert!(text.contains('•'), "a chave deve ser mascarada:\n{text}");
+        assert!(
+            !text.contains("sk-secret-123"),
+            "a chave crua não pode aparecer:\n{text}"
+        );
     }
 }

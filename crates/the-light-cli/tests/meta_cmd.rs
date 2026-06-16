@@ -10,13 +10,14 @@ fn light() -> Command {
 }
 
 #[test]
-fn version_reports_1_0_0() {
+fn version_reports_crate_version() {
+    // Robusto a bumps: confere contra a versão da própria crate.
     light()
         .arg("--version")
         .assert()
         .success()
         .stdout(contains("light"))
-        .stdout(contains("1.0.0"));
+        .stdout(contains(env!("CARGO_PKG_VERSION")));
 }
 
 #[test]

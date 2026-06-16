@@ -908,6 +908,115 @@ pub fn parse_references(input: &str) -> Result<Vec<Reference>, ReferenceError> {
     Ok(out)
 }
 
+/// Uma referência detectada dentro de um texto livre (prosa), com o intervalo
+/// de bytes que ela ocupa no texto original (para realce inline).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedRef {
+    /// Intervalo de bytes da referência no texto de origem.
+    pub range: std::ops::Range<usize>,
+    /// Referência reconhecida.
+    pub reference: Reference,
+}
+
+/// Regex de varredura: nome de livro (qualquer grafia conhecida) seguido de
+/// `cap[:.]ver[-ver]?`. Construída uma única vez, com as grafias ordenadas da
+/// mais longa para a mais curta (o motor é *leftmost-first*: assim "1 Coríntios"
+/// vence "Coríntios" e o numeral inicial não vira um capítulo solto).
+fn scan_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        let mut spellings: Vec<&'static str> = Vec::new();
+        for b in &BOOKS {
+            spellings.push(b.name_en);
+            spellings.push(b.name_pt);
+            spellings.push(b.abbrev_en);
+            spellings.push(b.abbrev_pt);
+            for a in b.aliases {
+                spellings.push(a);
+            }
+        }
+        spellings.sort_by(|a, b| {
+            b.chars()
+                .count()
+                .cmp(&a.chars().count())
+                .then_with(|| a.cmp(b))
+        });
+        spellings.dedup();
+        let alt = spellings
+            .iter()
+            .map(|s| regex::escape(s))
+            .collect::<Vec<_>>()
+            .join("|");
+        let pat = format!(
+            r"(?i)\b(?P<book>{alt})\.?\s*(?P<chap>\d{{1,3}})(?:\s*[:.]\s*(?P<v1>\d{{1,3}})(?:\s*[-–]\s*(?P<v2>\d{{1,3}}))?)?"
+        );
+        Regex::new(&pat).expect("regex de scan de referências válida")
+    })
+}
+
+/// Varre um texto livre e devolve todas as referências bíblicas citadas, na
+/// ordem em que aparecem, com seus intervalos de bytes.
+///
+/// Reduz falsos positivos: abreviações curtas (≤3 letras) só contam quando há
+/// um versículo explícito (ex.: `Gn 1.1` conta, `am 7` não); capítulos fora do
+/// intervalo do livro são descartados.
+///
+/// # Exemplos
+/// ```
+/// use the_light_core::reference::scan_references;
+/// let refs = scan_references("Como diz João 3:16 e Romanos 5.8.");
+/// assert_eq!(refs.len(), 2);
+/// assert_eq!(refs[0].reference.book, 43);
+/// assert_eq!(refs[1].reference.chapter, 5);
+/// ```
+pub fn scan_references(text: &str) -> Vec<ScannedRef> {
+    let mut out = Vec::new();
+    for caps in scan_regex().captures_iter(text) {
+        let whole = caps.get(0).unwrap();
+        let book_tok = &caps["book"];
+        let Some(book) = book_number(book_tok) else {
+            continue;
+        };
+        let Ok(chapter) = caps["chap"].parse::<u16>() else {
+            continue;
+        };
+        if chapter == 0 || chapter > chapters_in_book(book) {
+            continue;
+        }
+        let v1 = caps.name("v1").and_then(|m| m.as_str().parse::<u16>().ok());
+        let v2 = caps.name("v2").and_then(|m| m.as_str().parse::<u16>().ok());
+
+        // Abreviação curta sem versículo é ruído em prosa: exige separador.
+        let book_len = book_tok.chars().filter(|c| c.is_alphanumeric()).count();
+        if book_len <= 3 && v1.is_none() {
+            continue;
+        }
+
+        let verses = match (v1, v2) {
+            (None, _) => VerseRange::WholeChapter,
+            (Some(a), None) if a > 0 => VerseRange::Single(a),
+            (Some(a), Some(b)) if a > 0 && b > 0 && a <= b => {
+                if a == b {
+                    VerseRange::Single(a)
+                } else {
+                    VerseRange::Range { start: a, end: b }
+                }
+            }
+            _ => continue,
+        };
+
+        out.push(ScannedRef {
+            range: whole.range(),
+            reference: Reference {
+                book,
+                chapter,
+                verses,
+            },
+        });
+    }
+    out
+}
+
 /// Idioma de exibição para formatar uma referência.
 pub use crate::model::Lang;
 
@@ -1265,5 +1374,51 @@ mod tests {
         assert_eq!(format_reference(&range, Lang::En), "Genesis 1:1-3");
         let whole = r(19, 23, VerseRange::WholeChapter);
         assert_eq!(format_reference(&whole, Lang::Pt), "Salmos 23");
+    }
+
+    // ---- varredura de referências em prosa ----
+
+    #[test]
+    fn scan_finds_references_in_prose() {
+        let refs = scan_references("Como diz João 3:16 e Romanos 5.8, veja também Salmo 23.");
+        let got: Vec<Reference> = refs.iter().map(|s| s.reference).collect();
+        assert!(got.contains(&r(43, 3, VerseRange::Single(16))), "{got:?}");
+        assert!(got.contains(&r(45, 5, VerseRange::Single(8))), "{got:?}");
+        assert!(
+            got.contains(&r(19, 23, VerseRange::WholeChapter)),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn scan_handles_ranges_and_numbered_books() {
+        let refs = scan_references("Leia 1 Coríntios 13:4-7 com atenção.");
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(
+            refs[0].reference,
+            r(46, 13, VerseRange::Range { start: 4, end: 7 })
+        );
+        // O numeral inicial não vira um capítulo solto.
+        assert!(!refs.iter().any(|s| s.reference.chapter == 1));
+    }
+
+    #[test]
+    fn scan_ignores_bare_abbrev_and_out_of_range() {
+        // "am 7" (abreviação sem versículo) é ruído; capítulo fora do intervalo
+        // do livro é descartado; só a referência plena sobrevive.
+        let refs = scan_references("eu am 7 anos; João 999 não existe; mas João 3:16 sim.");
+        assert!(refs
+            .iter()
+            .any(|s| s.reference == r(43, 3, VerseRange::Single(16))));
+        assert!(!refs.iter().any(|s| s.reference.chapter == 999));
+        assert!(!refs.iter().any(|s| s.reference.chapter == 7));
+    }
+
+    #[test]
+    fn scan_ranges_point_to_the_matched_text() {
+        let text = "ver João 3:16 aqui";
+        let refs = scan_references(text);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(&text[refs[0].range.clone()], "João 3:16");
     }
 }
