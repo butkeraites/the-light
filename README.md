@@ -3,10 +3,10 @@
 > Leitor de Bíblia hackeável para terminal, com estudo exegético assistido por IA
 > (lente denominacional configurável), dados locais e modelo *bring-your-own-key*.
 
-Status: **Fase 3 — TUI concluída** (Marco 3, `v0.4.0`): interface `ratatui` completa
-(navegação, leitura, painéis de estudo, busca interativa, tema) — sobre a base de
-leitura/busca (Fase 1) e estudo pessoal (Fase 2). Veja [`SPEC.md`](SPEC.md) para a
-visão e [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap.
+Status: **Fase 4 — Planos de leitura concluída** (Marco 4, `v0.5.0`): planos anual/NT/
+evangelhos com progresso e export `.ics`, sobre a TUI (Fase 3), estudo pessoal (Fase 2)
+e leitura/busca (Fase 1). Veja [`SPEC.md`](SPEC.md) para a visão e
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap.
 
 ## Uso rápido
 
@@ -35,6 +35,11 @@ cargo run -p biblia-cli -- export notes --format md --output notas.md
 # 6. Interface de terminal (TUI) completa:
 cargo run -p biblia-cli -- tui --db data/biblia.sqlite
 #   ↑↓ versículo · n/p capítulo · v versão · / buscar · g ir · x refs · t tema · q sair
+
+# 7. Planos de leitura (anual/NT/evangelhos) com progresso e calendário:
+cargo run -p biblia-cli -- plan start annual --year 2026
+cargo run -p biblia-cli -- plan today
+cargo run -p biblia-cli -- plan ics --output plano.ics   # importável no calendário
 ```
 
 > Dados do usuário (notas `.md`, `highlights.json`) vivem em arquivos abertos e

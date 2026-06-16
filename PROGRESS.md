@@ -7,8 +7,15 @@
 
 | Tarefa | Data | Resumo | Commit |
 |---|---|---|---|
-| T4.1 | 2026-06-16 | Engine de planos (`userdata/plans.rs`): anual/NT/evangelhos a partir dos capítulos canônicos (1189), progresso por data (injetável) + persistência; `plan list/start/today/status/mark/reset`; 6 testes core + integração | _pendente_ |
-| T4.2 | 2026-06-16 | Export `.ics` (`plan ics`): VEVENT por dia (all-day), escape RFC 5545; calendário válido verificável | _pendente_ |
+| T4.1 | 2026-06-16 | Engine de planos (`userdata/plans.rs`): anual/NT/evangelhos a partir dos capítulos canônicos (1189), progresso por data (injetável) + persistência; `plan list/start/today/status/mark/reset`; 6 testes core + integração | 813d0cf |
+| T4.2 | 2026-06-16 | Export `.ics` (`plan ics`): VEVENT por dia (all-day), escape RFC 5545; calendário válido verificável | 813d0cf |
+
+**Marco 4** (2026-06-16): planos de leitura com acompanhamento. Tag `v0.5.0`.
+Suíte: 184 testes + 1 doctest, `clippy -D warnings` e `fmt` verdes.
+
+**Revisão adversarial pós-Marco 3** (2026-06-16): 24 achados → 10 confirmados (3 positivos) →
+corrigidos: navegação atômica da TUI (estado consistente em falha), guarda de janela
+minúscula, ciclo de tema visível a partir de "auto", clamp de `book_idx`. (commit 15261d1)
 
 ## Fase 3 — TUI (ratatui)
 
