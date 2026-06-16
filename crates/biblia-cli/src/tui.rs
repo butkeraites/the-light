@@ -35,9 +35,8 @@ pub fn run(args: TuiArgs) -> ExitCode {
 
     let config = Config::load().unwrap_or_default();
 
-    // Resolve a versão e captura os metadados ANTES de mover o `store` para a TUI
-    // (a fonte empresta o store).
-    let chosen = {
+    // Resolve a versão ANTES de mover o `store` para a TUI (a fonte empresta o store).
+    let tid = {
         let src = EmbeddedSource::new(&store);
         let translations = match src.translations() {
             Ok(t) => t,
@@ -63,7 +62,7 @@ pub fn run(args: TuiArgs) -> ExitCode {
             Some(slug) => {
                 let tid = TranslationId::new(slug.clone());
                 match translations.iter().find(|t| t.id == tid) {
-                    Some(t) => (t.id.clone(), t.abbrev.clone(), t.language),
+                    Some(t) => t.id.clone(),
                     None if args.version.is_some() => {
                         eprintln!(
                             "Versão desconhecida: `{slug}`. Disponíveis: {}",
@@ -76,21 +75,14 @@ pub fn run(args: TuiArgs) -> ExitCode {
                         return ExitCode::from(EXIT_USAGE);
                     }
                     // Config aponta versão ausente → usa a primeira disponível.
-                    None => {
-                        let t = &translations[0];
-                        (t.id.clone(), t.abbrev.clone(), t.language)
-                    }
+                    None => translations[0].id.clone(),
                 }
             }
-            None => {
-                let t = &translations[0];
-                (t.id.clone(), t.abbrev.clone(), t.language)
-            }
+            None => translations[0].id.clone(),
         }
     };
 
-    let (tid, label, lang) = chosen;
-    match biblia_tui::run(store, tid, label, lang) {
+    match biblia_tui::run(store, tid) {
         Ok(()) => ExitCode::from(EXIT_OK),
         Err(e) => {
             eprintln!("Erro na TUI: {e}");

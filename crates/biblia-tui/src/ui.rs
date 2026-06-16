@@ -10,7 +10,7 @@ use ratatui::Frame;
 use biblia_core::model::Lang;
 use biblia_core::reference::BOOKS;
 
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, InputKind};
 
 const ACCENT: Color = Color::Cyan;
 
@@ -23,20 +23,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .split(frame.area());
 
+    let title = format!(" Bíblia CLI — TUI    [{}]", app.version_label());
     frame.render_widget(
-        Paragraph::new(" Bíblia CLI — TUI").style(Style::new().add_modifier(Modifier::BOLD)),
+        Paragraph::new(title).style(Style::new().add_modifier(Modifier::BOLD)),
         rows[0],
     );
 
     let body = Layout::horizontal([Constraint::Length(24), Constraint::Min(10)]).split(rows[1]);
     draw_books(frame, app, body[0]);
     draw_reader(frame, app, body[1]);
-
-    frame.render_widget(
-        Paragraph::new(" q sair · ↑↓ navegar · Enter ler · n/p capítulo · Tab foco")
-            .style(Style::new().add_modifier(Modifier::DIM)),
-        rows[2],
-    );
+    draw_status(frame, app, rows[2]);
 }
 
 fn border_style(focused: bool) -> Style {
@@ -51,7 +47,7 @@ fn draw_books(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = BOOKS
         .iter()
         .map(|b| {
-            let name = match app.lang {
+            let name = match app.lang() {
                 Lang::Pt => b.name_pt,
                 Lang::En => b.name_en,
             };
@@ -83,7 +79,7 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
         "{} {}  ({})",
         app.book_name(),
         app.chapter,
-        app.version_label
+        app.version_label()
     );
     let block = Block::bordered()
         .title(title)
@@ -108,8 +104,6 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-
-    // Fixa a rolagem dentro do conteúdo renderizado.
     let total = paragraph.line_count(inner.width) as u16;
     let max_scroll = total.saturating_sub(inner.height);
     app.scroll = app.scroll.min(max_scroll);
@@ -117,13 +111,34 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(paragraph.scroll((app.scroll, 0)).block(block), area);
 }
 
+/// Barra inferior: prompt de entrada (se ativo) ou ajuda de teclas.
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let widget = match &app.input {
+        Some(input) => {
+            let label = match input.kind {
+                InputKind::GoTo => "Ir para",
+            };
+            let text = match &input.error {
+                Some(e) => format!(" {label}: {}    ⚠ {e}", input.buffer),
+                None => format!(" {label}: {}", input.buffer),
+            };
+            Paragraph::new(text).style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        }
+        None => Paragraph::new(
+            " q sair · ↑↓ navegar · Enter ler · n/p capítulo · v versão · g ir · Tab foco",
+        )
+        .style(Style::new().add_modifier(Modifier::DIM)),
+    };
+    frame.render_widget(widget, area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use biblia_core::model::TranslationId;
     use biblia_core::store::Store;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use rusqlite::params;
 
@@ -144,13 +159,7 @@ mod tests {
             )
             .unwrap();
         }
-        App::new(
-            store,
-            TranslationId::new("kjv"),
-            "KJV".to_string(),
-            Lang::En,
-        )
-        .unwrap()
+        App::new(store, "kjv".into()).unwrap()
     }
 
     fn to_text(buf: &Buffer) -> String {
@@ -166,27 +175,40 @@ mod tests {
         s
     }
 
-    #[test]
-    fn renders_books_title_and_chapter_text() {
-        let mut app = seeded_app();
+    fn render(app: &mut App) -> String {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let text = to_text(terminal.backend().buffer());
+        terminal.draw(|f| draw(f, app)).unwrap();
+        to_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn renders_books_title_version_and_chapter_text() {
+        let mut app = seeded_app();
+        let text = render(&mut app);
         assert!(text.contains("Bíblia CLI — TUI"));
+        assert!(text.contains("[KJV]"));
         assert!(text.contains("Livros"));
-        assert!(text.contains("Genesis")); // primeiro livro destacado
-        assert!(text.contains("Genesis 1")); // título do leitor
+        assert!(text.contains("Genesis"));
         assert!(text.contains("In the beginning"));
-        assert!(text.contains("q sair"));
+        assert!(text.contains("g ir"));
+    }
+
+    #[test]
+    fn shows_goto_prompt_when_active() {
+        let mut app = seeded_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()));
+        for c in "John 3".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        }
+        let text = render(&mut app);
+        assert!(text.contains("Ir para: John 3"), "{text}");
     }
 
     #[test]
     fn empty_chapter_shows_placeholder() {
         let mut app = seeded_app();
         app.select_book(41); // Lucas (42), sem texto semeado
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let text = to_text(terminal.backend().buffer());
+        let text = render(&mut app);
         assert!(text.contains("sem texto neste capítulo"));
     }
 }
