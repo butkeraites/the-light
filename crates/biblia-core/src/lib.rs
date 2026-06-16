@@ -9,5 +9,8 @@
 //! Os módulos são introduzidos tarefa a tarefa (ver `PROGRESS.md`).
 //! Crates de interface (`biblia-cli`, `biblia-tui`) dependem deste núcleo.
 
+pub mod model;
+pub mod reference;
+
 /// Versão do crate, exposta para `--version` da CLI.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

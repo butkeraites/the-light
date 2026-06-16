@@ -7,5 +7,6 @@
 
 | Tarefa | Data | Resumo | Commit |
 |---|---|---|---|
-| Setup | 2026-06-15 | Docs de governança (DATA_SOURCES/DECISIONS/PROGRESS) + git init | _pendente_ |
-| T0.1 | 2026-06-15 | Scaffolding do workspace (3 crates + xtask), compila verde | _pendente_ |
+| Setup | 2026-06-15 | Docs de governança (DATA_SOURCES/DECISIONS/PROGRESS) + git init | 6da176d |
+| T0.1 | 2026-06-15 | Scaffolding do workspace (3 crates + xtask), compila verde | 82e18ab |
+| T0.2 | 2026-06-15 | Modelo de domínio + parser de referências PT/EN (66 livros, 39 testes) | _pendente_ |
