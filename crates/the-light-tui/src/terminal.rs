@@ -5,6 +5,7 @@ use std::io::{stdout, Stdout};
 
 use anyhow::Result;
 use ratatui::crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -17,20 +18,34 @@ pub struct TerminalGuard {
 }
 
 impl TerminalGuard {
-    /// Entra em raw mode + tela alternativa e cria o terminal.
+    /// Entra em raw mode + tela alternativa (com captura de mouse) e cria o
+    /// terminal. A captura permite a seleção de texto restrita à área de leitura;
+    /// para a seleção nativa do terminal, segure ⌥/Option (iTerm2) ou Shift.
     pub fn new() -> Result<Self> {
         enable_raw_mode()?;
-        let mut out = stdout();
-        execute!(out, EnterAlternateScreen)?;
-        let terminal = Terminal::new(CrosstermBackend::new(out))?;
-        Ok(TerminalGuard { terminal })
+        // Se algo falhar após entrar em raw mode (mas antes do guard existir para
+        // restaurar no Drop), desfaz tudo para não deixar o terminal corrompido.
+        let build = || -> Result<Self> {
+            let mut out = stdout();
+            execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+            let terminal = Terminal::new(CrosstermBackend::new(out))?;
+            Ok(TerminalGuard { terminal })
+        };
+        build().inspect_err(|_| {
+            let _ = disable_raw_mode();
+            let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }
@@ -41,7 +56,7 @@ pub fn install_panic_hook() {
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
         original(info);
     }));
 }

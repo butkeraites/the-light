@@ -4,6 +4,7 @@
 //! ([`crate::theme::Palette`]), caixa de input estilizada, rodapé de atalhos,
 //! overlay de ajuda (`?`) e realce de busca colorido.
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
@@ -11,13 +12,16 @@ use ratatui::widgets::{
     Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
 
 use the_light_core::ai::{ChatRole, PROVIDERS};
-use the_light_core::model::Lang;
+use the_light_core::model::{Lang, Reference, VerseRange};
 use the_light_core::reference::{format_reference, scan_references, BOOKS};
 use the_light_core::search::{HL_END, HL_START};
 
-use crate::app::{AiPanel, AiStatus, App, Focus, Input, InputKind, SessionBrowser, SettingsMode};
+use crate::app::{
+    AiPanel, AiStatus, App, Focus, Input, InputKind, Selection, SessionBrowser, SettingsMode,
+};
 use crate::theme::Palette;
 
 /// Bloco padrão: borda arredondada, respiro interno e título estilizado.
@@ -35,6 +39,9 @@ fn block(title: &str, focused: bool, pal: &Palette) -> Block<'static> {
 /// Desenha a interface completa.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    // Sem leitor renderizado neste frame não há área de seleção; reposiciona-se
+    // adiante quando o leitor é de fato desenhado.
+    app.reader_inner = None;
     // Degradação graciosa em janelas minúsculas (evita layout impossível).
     if area.height < 3 || area.width < 24 {
         frame.render_widget(Paragraph::new("janela pequena demais"), area);
@@ -65,15 +72,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ])
         .split(rows[1]);
         draw_books(frame, app, body[0], &pal);
-        draw_reader(frame, app, body[1], &pal);
+        app.reader_inner = Some(draw_reader(frame, app, body[1], &pal));
         draw_panel(frame, app, body[2], &pal);
     } else if bw >= 46 {
         let body = Layout::horizontal([Constraint::Length(20), Constraint::Min(26)]).split(rows[1]);
         draw_books(frame, app, body[0], &pal);
-        draw_reader(frame, app, body[1], &pal);
+        app.reader_inner = Some(draw_reader(frame, app, body[1], &pal));
     } else {
-        draw_reader(frame, app, rows[1], &pal);
+        app.reader_inner = Some(draw_reader(frame, app, rows[1], &pal));
     }
+
+    // Pinta a seleção do mouse sobre o leitor e remonta o texto copiável.
+    apply_selection(frame, app, &pal);
 
     match &app.input {
         Some(input) => draw_input(frame, rows[2], input, &pal, input_boxed),
@@ -206,7 +216,9 @@ fn draw_books(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
+/// Desenha o leitor e devolve o retângulo **interno** (onde os versículos são
+/// pintados) — usado para restringir a seleção de texto via mouse.
+fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) -> Rect {
     let title = format!(
         "{} {}  ·  {}",
         app.book_name(),
@@ -214,7 +226,8 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         app.version_label()
     );
     let blk = block(&title, app.focus == Focus::Reader, pal);
-    let inner_width = blk.inner(area).width as usize;
+    let inner = blk.inner(area);
+    let inner_width = inner.width as usize;
 
     if app.verses.is_empty() {
         let p = Paragraph::new(Span::styled(
@@ -223,7 +236,7 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         ))
         .block(blk);
         frame.render_widget(p, area);
-        return;
+        return inner;
     }
 
     let numw = app
@@ -266,6 +279,155 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
     let mut state = ListState::default();
     state.select(Some(app.selected));
     frame.render_stateful_widget(list, area, &mut state);
+    inner
+}
+
+/// Pinta a seleção do mouse sobre o buffer **já renderizado** do leitor e remonta
+/// `app.selection_text` lendo célula a célula — ou seja, exatamente o que está
+/// visível (robusto a quebra de linha e rolagem). A seleção é "em fluxo" (como um
+/// parágrafo) e sempre confinada ao retângulo dos versículos.
+fn apply_selection(frame: &mut Frame, app: &mut App, pal: &Palette) {
+    let (Some(inner), Some(sel)) = (app.reader_inner, app.selection) else {
+        return;
+    };
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let left = inner.x;
+    let right = inner.x + inner.width - 1;
+    let top = inner.y;
+    let bottom = inner.y + inner.height - 1;
+
+    // Ordena âncora/cursor em ordem de leitura (linha, depois coluna).
+    let (start, end) = order_points(sel);
+    let y0 = start.1.clamp(top, bottom);
+    let y1 = end.1.clamp(top, bottom);
+
+    let style = pal.selection_style();
+    let buf = frame.buffer_mut();
+    let mut lines: Vec<String> = Vec::new();
+    for y in y0..=y1 {
+        // Chaves de coluna baseadas nas linhas JÁ grampeadas (y0/y1): a 1ª/última
+        // linha visível recebem o recorte parcial mesmo após um resize. Linha
+        // única: do menor ao maior x.
+        let (cx0, cx1) = if y0 == y1 {
+            (start.0.min(end.0), start.0.max(end.0))
+        } else if y == y0 {
+            (start.0, right)
+        } else if y == y1 {
+            (left, end.0)
+        } else {
+            (left, right)
+        };
+        let cx0 = cx0.clamp(left, right);
+        let cx1 = cx1.clamp(left, right);
+        let mut line = String::new();
+        // Glifos largos ocupam 2 células (a 2ª é um espaço de preenchimento):
+        // estiliza todas para um realce contíguo, mas só copia o glifo líder.
+        let mut lead = cx0;
+        for x in cx0..=cx1 {
+            let Some(cell) = buf.cell_mut((x, y)) else {
+                continue;
+            };
+            cell.set_style(style);
+            if x == lead {
+                let sym = cell.symbol();
+                let w = UnicodeWidthStr::width(sym).max(1) as u16;
+                line.push_str(sym);
+                lead = x.saturating_add(w);
+            }
+        }
+        // Apara espaços ao fim para que a cópia saia limpa.
+        while line.ends_with(' ') {
+            line.pop();
+        }
+        lines.push(line);
+    }
+    // Remove linhas vazias ao fim (arrasto que entrou na região em branco abaixo
+    // do texto) para não anexar quebras de linha soltas à cópia.
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let body = lines.join("\n");
+
+    // Seleção só de espaços/vazia: nada a copiar (e nada de citação solta).
+    if body.trim().is_empty() {
+        app.selection_text = body;
+        return;
+    }
+
+    // Preâmbulo de citação (Livro Cap:Vers (VERSÃO)) deduzido do número de
+    // versículo impresso na "calha" das linhas selecionadas — robusto à rolagem.
+    let numw = gutter_width(&app.verses) as u16;
+    let start_v = verse_at_or_above(buf, inner, numw, y0);
+    let end_v = verse_at_or_above(buf, inner, numw, y1);
+    let verses = match (start_v, end_v) {
+        (Some(s), Some(e)) if s == e => VerseRange::Single(s),
+        (Some(s), Some(e)) => VerseRange::Range {
+            start: s.min(e),
+            end: s.max(e),
+        },
+        // Número fora da viewport (versículo muito longo): cita o capítulo.
+        _ => VerseRange::WholeChapter,
+    };
+    let reference = Reference {
+        book: app.book_number(),
+        chapter: app.chapter,
+        verses,
+    };
+    let citation = format!(
+        "{} ({})",
+        format_reference(&reference, app.lang()),
+        app.version_label()
+    );
+    app.selection_text = format!("{citation}\n{body}");
+}
+
+/// Largura da calha de números de versículo — espelha o cálculo do leitor.
+fn gutter_width(verses: &[(u16, String)]) -> usize {
+    verses
+        .iter()
+        .map(|(n, _)| n.to_string().len())
+        .max()
+        .unwrap_or(2)
+        .max(2)
+}
+
+/// Lê o número de versículo impresso na calha da linha `y` (as `numw` primeiras
+/// colunas internas), se houver. Linhas de continuação têm a calha em branco.
+fn gutter_verse(buf: &Buffer, inner: Rect, numw: u16, y: u16) -> Option<u16> {
+    let x_end = (inner.x + numw).min(inner.x + inner.width);
+    let mut s = String::new();
+    for x in inner.x..x_end {
+        if let Some(c) = buf.cell((x, y)) {
+            s.push_str(c.symbol());
+        }
+    }
+    s.trim().parse::<u16>().ok()
+}
+
+/// Número de versículo "dono" da linha `y`: o último impresso na calha em `y` ou
+/// acima (cobre linhas de continuação de versículos que quebraram em várias).
+fn verse_at_or_above(buf: &Buffer, inner: Rect, numw: u16, y: u16) -> Option<u16> {
+    let mut yy = y;
+    loop {
+        if let Some(v) = gutter_verse(buf, inner, numw, yy) {
+            return Some(v);
+        }
+        if yy == inner.y {
+            return None;
+        }
+        yy -= 1;
+    }
+}
+
+/// Ordena os extremos da seleção em ordem de leitura `(linha, coluna)`.
+fn order_points(sel: Selection) -> ((u16, u16), (u16, u16)) {
+    if (sel.anchor.1, sel.anchor.0) <= (sel.cursor.1, sel.cursor.0) {
+        (sel.anchor, sel.cursor)
+    } else {
+        (sel.cursor, sel.anchor)
+    }
 }
 
 /// Painel lateral: busca (se ativa), navegação de xref ou estudo do versículo.
@@ -455,8 +617,17 @@ fn draw_input(frame: &mut Frame, area: Rect, input: &Input, pal: &Palette, boxed
     }
 }
 
-/// Rodapé de atalhos (quando não há input ativo). Mostra o tema atual.
+/// Rodapé de atalhos (quando não há input ativo). Mostra o tema atual — ou, por
+/// alguns instantes, uma mensagem efêmera (ex.: confirmação de cópia).
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
+    if let Some(msg) = &app.toast {
+        frame.render_widget(
+            Paragraph::new(format!(" {msg}"))
+                .style(pal.fg(pal.accent).add_modifier(Modifier::BOLD)),
+            area,
+        );
+        return;
+    }
     let hints = format!(
         " ↑↓ versículo · n/p cap · v versão · / buscar · g ir · x refs · t tema [{}] · a IA · s conversas · c chaves · ? ajuda",
         app.theme()
@@ -484,6 +655,7 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
         Line::from("  g           ir para referência (ex.: Jo 3.16)"),
         Line::from("  x           referências cruzadas"),
         Line::from("  t           trocar tema (dark/light/none)"),
+        Line::from("  mouse       arraste nos versículos p/ copiar (⌥/Shift = nativo)"),
         Line::from("  q / Esc     sair"),
         Line::from(""),
         Line::from(Span::styled("  ? ou Esc fecha esta ajuda", pal.fg(pal.dim))),
@@ -790,7 +962,9 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::Terminal;
     use rusqlite::params;
     use the_light_core::reference::parse_reference;
@@ -976,6 +1150,143 @@ mod tests {
             styled,
             "o termo casado deveria sair realçado (warn + negrito)"
         );
+    }
+
+    fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::empty(),
+        }
+    }
+
+    #[test]
+    fn mouse_drag_selects_and_copies_only_reader_text() {
+        let mut app = seeded_app();
+        app.config.theme = "dark".into();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        // 1º frame popula a área de leitura.
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let inner = app.reader_inner.expect("área de leitura conhecida");
+        // Seleciona a 2ª linha de versículo (Rm 3:24) — que NÃO é a linha
+        // realçada pela lista (cursor no 23), provando o realce da seleção.
+        let row = inner.y + 1;
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), inner.x, row));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            inner.x + inner.width - 1,
+            row,
+        ));
+        // 2º frame: pinta a seleção e remonta o texto copiável.
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        // Preâmbulo de citação (best-practice) na 1ª linha + versículo no corpo.
+        let lines: Vec<&str> = app.selection_text.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("Romans 3:24 (KJV)"),
+            "1ª linha deveria ser a citação:\n{:?}",
+            app.selection_text
+        );
+        assert!(
+            app.selection_text
+                .contains("Being justified freely by his grace"),
+            "deveria copiar o versículo:\n{:?}",
+            app.selection_text
+        );
+        // Nada de cromo: bordas/painéis vizinhos ficam de fora da seleção.
+        for junk in ['│', '╭', '╮', '╰', '╯', '─'] {
+            assert!(
+                !app.selection_text.contains(junk),
+                "a seleção não deve conter o caractere de borda {junk:?}"
+            );
+        }
+        // A célula selecionada recebe o fundo da seleção no buffer renderizado.
+        let pal = Palette::resolve("dark");
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf.cell((inner.x, row)).unwrap().bg,
+            pal.sel_bg,
+            "a célula selecionada deveria ganhar o fundo de seleção"
+        );
+    }
+
+    #[test]
+    fn multi_verse_selection_cites_a_range() {
+        let mut app = seeded_app();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let inner = app.reader_inner.expect("área de leitura conhecida");
+        // Arrasta da 1ª linha (Rm 3:23) até a 2ª (Rm 3:24).
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x,
+            inner.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            inner.x + inner.width - 1,
+            inner.y + 1,
+        ));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(
+            app.selection_text.starts_with("Romans 3:23-24 (KJV)\n"),
+            "deveria citar o intervalo:\n{:?}",
+            app.selection_text
+        );
+    }
+
+    #[test]
+    fn dragging_over_blank_area_yields_no_citation() {
+        let mut app = seeded_app();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let inner = app.reader_inner.expect("área de leitura conhecida");
+        // Linhas em branco abaixo dos 2 versículos do capítulo.
+        let blank = inner.y + inner.height - 1;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x,
+            blank,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            inner.x + inner.width - 1,
+            blank,
+        ));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(
+            app.selection_text.trim().is_empty(),
+            "área vazia não gera citação solta:\n{:?}",
+            app.selection_text
+        );
+    }
+
+    #[test]
+    fn mouse_drag_starting_outside_reader_selects_nothing() {
+        let mut app = seeded_app();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let inner = app.reader_inner.expect("área de leitura conhecida");
+        // Começa na lista de livros (coluna 2), bem à esquerda do leitor.
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, inner.y));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            inner.x + 1,
+            inner.y,
+        ));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(app.selection.is_none(), "começar fora não seleciona");
+        assert!(app.selection_text.is_empty());
+    }
+
+    #[test]
+    fn copy_confirmation_toast_shows_in_footer() {
+        let mut app = seeded_app();
+        app.notify_copied(true, 42);
+        let text = render(&mut app);
+        assert!(text.contains("42 caracteres copiados"), "{text}");
     }
 
     #[test]

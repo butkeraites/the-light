@@ -3,7 +3,8 @@
 use std::sync::mpsc::Receiver;
 
 use anyhow::{anyhow, Result};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 
 use the_light_core::ai::{
     self, build_provider, ChatMessage, ChatRole, KeyStore, LlmProvider, PROVIDERS,
@@ -19,6 +20,38 @@ use the_light_core::xref::{self, CrossRef};
 
 /// Temas disponíveis, ciclados pela tecla `t` e persistidos em `config.toml`.
 pub const THEMES: &[&str] = &["dark", "light", "none"];
+
+/// Duração (em ticks ociosos de ~80ms) da mensagem efêmera de status (toast).
+const TOAST_TICKS: u8 = 30;
+
+/// Quantos versículos a roda do mouse avança por entalhe (a captura do mouse
+/// substitui a rolagem nativa do terminal na tela alternativa).
+const MOUSE_SCROLL: isize = 3;
+
+/// Seleção de texto via mouse, **restrita à área de leitura**. As coordenadas são
+/// absolutas no terminal `(coluna, linha)`, sempre grampeadas ao retângulo dos
+/// versículos — começar o arrasto fora dele simplesmente não inicia seleção.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    /// Onde a seleção nasceu (botão pressionado).
+    pub anchor: (u16, u16),
+    /// Ponta atual da seleção (segue o arrasto).
+    pub cursor: (u16, u16),
+    /// `true` enquanto o botão segue pressionado.
+    pub dragging: bool,
+}
+
+/// `true` se `(col, row)` está dentro de `r`.
+fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+}
+
+/// Grampeia `(col, row)` aos limites de `r` (canto inferior-direito inclusivo).
+fn clamp_to_rect(r: Rect, col: u16, row: u16) -> (u16, u16) {
+    let max_x = r.x + r.width.saturating_sub(1);
+    let max_y = r.y + r.height.saturating_sub(1);
+    (col.clamp(r.x, max_x), row.clamp(r.y, max_y))
+}
 
 /// Resultado de uma leitura de capítulo: `(num_capítulos, capítulo, versículos)`.
 type ChapterData = (u16, u16, Vec<(u16, String)>);
@@ -239,6 +272,19 @@ pub struct App {
     pub settings: Option<Settings>,
     /// Navegador de conversas salvas, se aberto.
     pub sessions: Option<SessionBrowser>,
+    /// Retângulo interno da área de leitura no último frame (origem da seleção).
+    pub reader_inner: Option<Rect>,
+    /// Seleção de texto via mouse em curso/fixada, se houver.
+    pub selection: Option<Selection>,
+    /// Texto da seleção atual, remontado a cada `draw` a partir do buffer visível.
+    pub selection_text: String,
+    /// Pedido de cópia pendente: o runtime copia `selection_text` após o próximo
+    /// `draw` (que o remonta com a citação a partir do buffer fresco).
+    copy_requested: bool,
+    /// Mensagem efêmera de status (ex.: confirmação de cópia).
+    pub toast: Option<String>,
+    /// Ticks restantes até o toast desaparecer.
+    toast_ticks: u8,
     /// Sai do loop quando `true`.
     pub should_quit: bool,
 }
@@ -288,6 +334,12 @@ impl App {
             spinner: 0,
             settings: None,
             sessions: None,
+            reader_inner: None,
+            selection: None,
+            selection_text: String::new(),
+            copy_requested: false,
+            toast: None,
+            toast_ticks: 0,
             should_quit: false,
         };
         app.reload()?;
@@ -565,27 +617,18 @@ impl App {
         });
     }
 
-    /// Monta o contexto (RAG local) da pergunta: rótulo do capítulo, versículos
-    /// numerados e as referências cruzadas do versículo selecionado. Devolve
+    /// Monta o contexto (RAG local) da pergunta pelo **mesmo** montador do núcleo
+    /// usado pela CLi (`ask`): rótulo do capítulo, versículos numerados e as
+    /// referências cruzadas agregadas por **todo o capítulo**. Devolve
     /// `(rótulo_da_âncora, contexto)`.
     fn ai_context(&self) -> (String, String) {
         let lang = self.lang();
-        let label = format!("{} {}", self.book_name(), self.chapter);
-        let mut context = format!("{label}:\n");
-        for (n, text) in &self.verses {
-            context.push_str(&format!("{n} {text}\n"));
-        }
-        let xrefs: Vec<String> = self
-            .current_xrefs()
-            .iter()
-            .map(|c| format_reference(&c.reference, lang))
-            .collect();
-        let related = if xrefs.is_empty() {
-            "(nenhuma)".to_string()
-        } else {
-            xrefs.join("; ")
-        };
-        context.push_str(&format!("\nReferências relacionadas: {related}"));
+        let reference = Reference::whole_chapter(self.book_number(), self.chapter);
+        let label = format_reference(&reference, lang);
+        let numbered = ai::numbered_verses(self.verses.iter().map(|(n, text)| (*n, text.as_str())));
+        let nums: Vec<u16> = self.verses.iter().map(|(n, _)| *n).collect();
+        let related = xref::passage_labels(self.store.conn(), &reference, &nums, lang, 8);
+        let context = ai::ask_context(&label, &numbered, &related);
         (label, context)
     }
 
@@ -727,6 +770,106 @@ impl App {
     pub fn tick(&mut self) {
         if matches!(self.ai.as_ref().map(|p| &p.status), Some(AiStatus::Pending)) {
             self.spinner = self.spinner.wrapping_add(1);
+        }
+        // Esvanece o toast de status após alguns ticks ociosos.
+        if self.toast_ticks > 0 {
+            self.toast_ticks -= 1;
+            if self.toast_ticks == 0 {
+                self.toast = None;
+            }
+        }
+    }
+
+    /// `true` se algum overlay modal está aberto (captura teclado/mouse).
+    fn overlay_open(&self) -> bool {
+        self.show_help || self.ai.is_some() || self.settings.is_some() || self.sessions.is_some()
+    }
+
+    /// Limpa a seleção de texto do mouse e o texto copiável associado.
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.selection_text.clear();
+    }
+
+    /// Consome o pedido de cópia pendente (o runtime executa o IO da área de
+    /// transferência fora desta lógica pura, lendo `selection_text`).
+    pub fn take_copy_request(&mut self) -> bool {
+        std::mem::take(&mut self.copy_requested)
+    }
+
+    /// Registra o desfecho de uma cópia, exibindo um toast de confirmação/erro.
+    pub fn notify_copied(&mut self, copied: bool, chars: usize) {
+        self.toast = Some(if copied {
+            format!("✓ {chars} caracteres copiados")
+        } else {
+            "⚠ não foi possível copiar".to_string()
+        });
+        self.toast_ticks = TOAST_TICKS;
+    }
+
+    /// Processa um evento de mouse: seleção de texto **restrita à área de
+    /// leitura**. Começar o arrasto fora dos versículos não inicia seleção; o
+    /// arrasto é grampeado ao retângulo. A cópia é diferida (ver
+    /// [`App::take_copy_request`]); a roda rola pelos versículos.
+    pub fn handle_mouse(&mut self, m: MouseEvent) {
+        // Overlays capturam tudo — não há seleção "por baixo" deles.
+        if self.overlay_open() {
+            return;
+        }
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.selection = match self.reader_inner {
+                    // Só inicia se o clique nasceu DENTRO da área de versículos.
+                    Some(inner) if rect_contains(inner, m.column, m.row) => {
+                        let p = (m.column, m.row);
+                        Some(Selection {
+                            anchor: p,
+                            cursor: p,
+                            dragging: true,
+                        })
+                    }
+                    _ => None,
+                };
+                self.selection_text.clear();
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let (Some(inner), Some(sel)) = (self.reader_inner, self.selection.as_mut()) {
+                    if sel.dragging {
+                        sel.cursor = clamp_to_rect(inner, m.column, m.row);
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                // Finaliza mesmo sem `reader_inner` (ex.: resize no meio do arrasto).
+                let inner = self.reader_inner;
+                let Some(sel) = self.selection.as_mut() else {
+                    return;
+                };
+                sel.dragging = false;
+                // A posição de soltura é a autoritativa (cobre arrastos rápidos
+                // em que o terminal não emitiu um Drag final).
+                if let Some(inner) = inner {
+                    sel.cursor = clamp_to_rect(inner, m.column, m.row);
+                }
+                // Clique simples (sem arrastar): apenas desfaz a seleção.
+                if sel.anchor == sel.cursor {
+                    self.clear_selection();
+                    return;
+                }
+                // Pede a cópia: o próximo `draw` remonta `selection_text` (com a
+                // citação) a partir do buffer e o runtime copia em seguida.
+                self.copy_requested = true;
+            }
+            // A roda rola pelos versículos (sem rolagem nativa sob captura).
+            MouseEventKind::ScrollDown => {
+                self.clear_selection();
+                self.move_cursor(MOUSE_SCROLL);
+            }
+            MouseEventKind::ScrollUp => {
+                self.clear_selection();
+                self.move_cursor(-MOUSE_SCROLL);
+            }
+            _ => {}
         }
     }
 
@@ -925,6 +1068,8 @@ impl App {
 
     /// Processa uma tecla pressionada.
     pub fn handle_key(&mut self, key: KeyEvent) {
+        // Qualquer tecla cancela a seleção de texto do mouse (como num editor).
+        self.clear_selection();
         // Os modais capturam o teclado, em ordem de prioridade. `input` vem antes
         // do overlay de IA: assim a digitação de um follow-up vai para a caixa de
         // texto enquanto a conversa continua visível ao fundo.
@@ -1403,6 +1548,126 @@ mod tests {
         app.handle_key(key(KeyCode::Char('q')));
         assert!(app.xref_nav.is_none());
         assert!(!app.should_quit, "q deve só fechar a lista, não encerrar");
+    }
+
+    // --- Seleção de texto via mouse ---------------------------------------
+
+    fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::empty(),
+        }
+    }
+
+    /// App com uma área de leitura conhecida (x=10, y=5, 20×8) para a geometria.
+    fn app_with_reader() -> App {
+        let mut app = seeded_app();
+        app.reader_inner = Some(Rect {
+            x: 10,
+            y: 5,
+            width: 20,
+            height: 8,
+        });
+        app
+    }
+
+    #[test]
+    fn mouse_down_outside_reader_does_not_select() {
+        let mut app = app_with_reader();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        assert!(app.selection.is_none(), "clique fora não deve selecionar");
+    }
+
+    #[test]
+    fn mouse_down_inside_starts_selection() {
+        let mut app = app_with_reader();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
+        let sel = app.selection.expect("seleção iniciada dentro do leitor");
+        assert_eq!(sel.anchor, (12, 6));
+        assert_eq!(sel.cursor, (12, 6));
+        assert!(sel.dragging);
+    }
+
+    #[test]
+    fn mouse_drag_is_clamped_to_reader_area() {
+        let mut app = app_with_reader();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
+        // Arrasta muito além da área: deve grampear no canto inferior-direito.
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 200, 200));
+        let sel = app.selection.expect("seleção ativa");
+        assert_eq!(sel.cursor, (29, 12), "grampeado a (x+w-1, y+h-1)");
+    }
+
+    #[test]
+    fn plain_click_clears_selection_without_copy() {
+        let mut app = app_with_reader();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 12, 6));
+        assert!(
+            app.selection.is_none(),
+            "clique sem arrastar desfaz a seleção"
+        );
+        assert!(!app.take_copy_request(), "clique simples não pede cópia");
+    }
+
+    #[test]
+    fn drag_release_requests_copy_and_keeps_highlight() {
+        let mut app = app_with_reader();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 20, 6));
+        // A seleção permanece fixada (realce visível até a próxima ação) e o
+        // cursor segue a posição de soltura (mesmo sem um Drag final).
+        let sel = app.selection.expect("seleção fixada");
+        assert!(!sel.dragging);
+        assert_eq!(sel.cursor, (20, 6), "Up usa a posição de soltura");
+        assert!(app.take_copy_request(), "soltar após arrastar pede a cópia");
+        // O runtime confirma a cópia → toast.
+        app.notify_copied(true, 19);
+        assert!(app.toast.as_deref().unwrap().contains("19 caracteres"));
+    }
+
+    #[test]
+    fn scroll_moves_verse_cursor_and_clears_selection() {
+        let mut app = app_with_reader();
+        app.selected = 0;
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
+        assert!(app.selection.is_some());
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 12, 6));
+        assert!(app.selection.is_none(), "rolar cancela a seleção");
+        // seeded_app tem 2 versículos (índices 0..=1): rola e grampeia no fim.
+        assert_eq!(app.selected, 1);
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 12, 6));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn any_key_cancels_selection() {
+        let mut app = app_with_reader();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
+        assert!(app.selection.is_some());
+        app.handle_key(key(KeyCode::Down));
+        assert!(app.selection.is_none(), "tecla cancela a seleção do mouse");
+    }
+
+    #[test]
+    fn mouse_ignored_while_overlay_open() {
+        let mut app = app_with_reader();
+        app.show_help = true;
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
+        assert!(app.selection.is_none(), "overlay captura o mouse");
+    }
+
+    #[test]
+    fn toast_fades_after_ticks() {
+        let mut app = app_with_reader();
+        app.notify_copied(true, 5);
+        assert!(app.toast.is_some());
+        for _ in 0..TOAST_TICKS {
+            app.tick();
+        }
+        assert!(app.toast.is_none(), "o toast some após {TOAST_TICKS} ticks");
     }
 
     // --- IA na TUI ---------------------------------------------------------

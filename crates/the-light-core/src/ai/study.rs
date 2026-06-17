@@ -46,21 +46,41 @@ pub struct StudyResult {
     pub model: String,
 }
 
+/// Numera versículos `(número, texto)` numa linha cada (`"{n} {texto}"`). Base
+/// comum da numeração local (anti-alucinação) para a CLI e a TUI.
+pub fn numbered_verses<'a>(verses: impl IntoIterator<Item = (u16, &'a str)>) -> String {
+    verses
+        .into_iter()
+        .map(|(n, text)| format!("{n} {text}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Texto da passagem numerado por versículo (uma linha por versículo).
 ///
 /// Sempre vem do acervo local (anti-alucinação). O `unwrap_or(0)` é uma guarda
 /// defensiva: na prática os versículos de uma `Passage` carregam sempre um
 /// número (`VerseRange::Single`).
 pub fn numbered_passage(passage: &Passage) -> String {
-    passage
-        .verses
-        .iter()
-        .map(|v| {
-            let n = v.reference.verses.start().unwrap_or(0);
-            format!("{n} {}", v.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    numbered_verses(
+        passage
+            .verses
+            .iter()
+            .map(|v| (v.reference.verses.start().unwrap_or(0), v.text.as_str())),
+    )
+}
+
+/// Monta o **bloco de contexto RAG** de uma pergunta ancorada: rótulo da
+/// referência, versículos numerados (acervo local) e referências relacionadas.
+/// Função pura — o mesmo bloco serve ao `ask` da CLI e à conversa da TUI. `related`
+/// vazio vira "(nenhuma)" (marcação explícita anti-alucinação).
+pub fn ask_context(label: &str, numbered_passage: &str, related: &[String]) -> String {
+    let related = if related.is_empty() {
+        "(nenhuma)".to_string()
+    } else {
+        related.join("; ")
+    };
+    format!("{label}:\n{numbered_passage}\n\nReferências relacionadas: {related}")
 }
 
 fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
@@ -243,6 +263,36 @@ mod tests {
         let provider = MockLlmProvider::new("Resposta ancorada.");
         let answer = ask(&provider, "O que é graça?", "Ef 2.8 ...", Lang::Pt).unwrap();
         assert_eq!(answer, "Resposta ancorada.");
+    }
+
+    #[test]
+    fn numbered_verses_and_passage_agree() {
+        // A base comum numera tuplas; `numbered_passage` apenas a alimenta com os
+        // versículos da `Passage` — os dois devem coincidir byte a byte.
+        let expected = "8 Porque pela graça sois salvos\n9 Não vem das obras";
+        assert_eq!(numbered_passage(&passage()), expected);
+        let from_tuples = numbered_verses([
+            (8u16, "Porque pela graça sois salvos"),
+            (9, "Não vem das obras"),
+        ]);
+        assert_eq!(from_tuples, expected);
+    }
+
+    #[test]
+    fn ask_context_assembles_the_rag_block() {
+        let numbered = "23 For all have sinned\n24 Being justified";
+        let ctx = ask_context("Romans 3", numbered, &["Romans 6:23".to_string()]);
+        assert_eq!(
+            ctx,
+            "Romans 3:\n23 For all have sinned\n24 Being justified\n\n\
+             Referências relacionadas: Romans 6:23"
+        );
+        // Sem refs relacionadas: marcação explícita "(nenhuma)".
+        let empty = ask_context("Romans 3", numbered, &[]);
+        assert!(
+            empty.ends_with("Referências relacionadas: (nenhuma)"),
+            "{empty}"
+        );
     }
 
     /// Provedor de teste que devolve os conteúdos das mensagens unidos — permite

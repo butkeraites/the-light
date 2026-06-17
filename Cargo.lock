@@ -2018,6 +2018,7 @@ dependencies = [
  "rusqlite",
  "tempfile",
  "the-light-core",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

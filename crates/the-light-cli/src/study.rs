@@ -12,6 +12,7 @@ use the_light_core::ai::{self, Denomination, StudyDepth, StudyRequest};
 use the_light_core::config::Config;
 use the_light_core::reference::{format_reference, parse_reference};
 use the_light_core::userdata;
+use the_light_core::xref;
 
 use crate::ai_common;
 
@@ -113,7 +114,8 @@ pub fn run(args: StudyArgs) -> ExitCode {
         );
     }
 
-    let cross_references = ai_common::xref_labels(&store, &reference, &passage, lang, 8);
+    let cross_references =
+        xref::passage_labels(store.conn(), &reference, &passage.verse_numbers(), lang, 8);
 
     let provider =
         match ai_common::resolve_provider(args.provider.clone(), args.model.clone(), &config) {

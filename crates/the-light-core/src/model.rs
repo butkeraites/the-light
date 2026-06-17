@@ -278,6 +278,19 @@ impl Passage {
     pub fn is_empty(&self) -> bool {
         self.verses.is_empty()
     }
+
+    /// Números de versículo presentes (início de cada intervalo); pula capítulo
+    /// inteiro. Usado para agregar referências cruzadas de toda a passagem.
+    pub fn verse_numbers(&self) -> Vec<u16> {
+        self.verses
+            .iter()
+            .filter_map(|v| match v.reference.verses {
+                VerseRange::Single(n) => Some(n),
+                VerseRange::Range { start, .. } => Some(start),
+                VerseRange::WholeChapter => None,
+            })
+            .collect()
+    }
 }
 
 /// Um resultado de busca full-text.

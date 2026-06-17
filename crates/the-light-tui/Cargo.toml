@@ -14,6 +14,9 @@ publish = false
 anyhow = "1.0.102"
 the-light-core = { version = "1.2.0", path = "../the-light-core" }
 ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
+# Larguras de coluna corretas ao reconstruir a seleção a partir do buffer
+# (glifos largos ocupam 2 células). Mesma versão usada internamente pelo ratatui.
+unicode-width = "0.2"
 
 [dev-dependencies]
 rusqlite = { version = "0.40.1", features = ["bundled"] }

@@ -5,10 +5,8 @@ use std::process::ExitCode;
 
 use the_light_core::ai::{build_provider, KeyStore, LlmProvider};
 use the_light_core::config::Config;
-use the_light_core::model::{Lang, Passage, Reference, TranslationId, VerseRange};
-use the_light_core::reference::format_reference;
+use the_light_core::model::{Passage, Reference, TranslationId};
 use the_light_core::store::Store;
-use the_light_core::xref;
 
 const EXIT_NOT_FOUND: u8 = 1;
 const EXIT_USAGE: u8 = 2;
@@ -99,68 +97,4 @@ pub fn resolve_passage(
             Err(ExitCode::from(EXIT_NOT_FOUND))
         }
     }
-}
-
-/// Rótulos de referências cruzadas locais agregados por **toda a passagem**
-/// (RAG leve). Cobre o caso de capítulo inteiro (não só o v.1): consulta cada
-/// versículo presente, deduplica por referência (maior nº de votos), ordena por
-/// votos e limita o total. Melhor esforço — ignora erros de consulta.
-pub fn xref_labels(
-    store: &Store,
-    reference: &Reference,
-    passage: &Passage,
-    lang: Lang,
-    limit: usize,
-) -> Vec<String> {
-    use std::collections::HashMap;
-
-    let verses: Vec<u16> = passage
-        .verses
-        .iter()
-        .filter_map(|v| match v.reference.verses {
-            VerseRange::Single(n) => Some(n),
-            VerseRange::Range { start, .. } => Some(start),
-            VerseRange::WholeChapter => None,
-        })
-        .collect();
-    // Salvaguarda: se a passagem não trouxer números, usa o início da referência.
-    let verses = if verses.is_empty() {
-        vec![match reference.verses {
-            VerseRange::Single(v) => v,
-            VerseRange::Range { start, .. } => start,
-            VerseRange::WholeChapter => 1,
-        }]
-    } else {
-        verses
-    };
-
-    let per = limit.max(1);
-    let mut best: HashMap<Reference, i64> = HashMap::new();
-    for v in verses {
-        if let Ok(hits) = xref::for_verse(
-            store.conn(),
-            reference.book,
-            reference.chapter,
-            v,
-            xref::DEFAULT_MIN_VOTES,
-            per,
-        ) {
-            for h in hits {
-                best.entry(h.reference)
-                    .and_modify(|votes| *votes = (*votes).max(h.votes))
-                    .or_insert(h.votes);
-            }
-        }
-    }
-
-    let mut all: Vec<(Reference, i64)> = best.into_iter().collect();
-    all.sort_by(|a, b| {
-        b.1.cmp(&a.1)
-            .then_with(|| a.0.book.cmp(&b.0.book))
-            .then_with(|| a.0.chapter.cmp(&b.0.chapter))
-    });
-    all.into_iter()
-        .take(limit)
-        .map(|(r, _)| format_reference(&r, lang))
-        .collect()
 }

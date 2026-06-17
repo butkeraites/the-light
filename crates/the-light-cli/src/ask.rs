@@ -10,6 +10,7 @@ use clap::Args;
 use the_light_core::ai;
 use the_light_core::config::Config;
 use the_light_core::reference::{format_reference, parse_reference};
+use the_light_core::xref;
 
 use crate::ai_common;
 
@@ -79,18 +80,13 @@ pub fn run(args: AskArgs) -> ExitCode {
                 );
             }
             let passage = resolved.passage;
+            // Contexto RAG montado pelo núcleo (mesmo bloco usado pela TUI):
+            // rótulo + versículos numerados + refs cruzadas de toda a passagem.
             let label = format_reference(&reference, lang);
-            // Texto numerado do acervo local (mesma lógica do `study`).
-            let mut ctx = format!("{label}:\n{}\n", ai::numbered_passage(&passage));
-            // Marca explicitamente o contexto de xrefs, mesmo vazio (anti-alucinação).
-            let xrefs = ai_common::xref_labels(&store, &reference, &passage, lang, 8);
-            let related = if xrefs.is_empty() {
-                "(nenhuma)".to_string()
-            } else {
-                xrefs.join("; ")
-            };
-            ctx.push_str(&format!("\nReferências relacionadas: {related}"));
-            ctx
+            let numbered = ai::numbered_passage(&passage);
+            let related =
+                xref::passage_labels(store.conn(), &reference, &passage.verse_numbers(), lang, 8);
+            ai::ask_context(&label, &numbered, &related)
         }
         None => {
             // `--db` só é usado com `--ref`; avisa se foi passado em vão.

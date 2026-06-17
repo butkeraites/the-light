@@ -5,7 +5,8 @@
 
 use rusqlite::{params, Connection};
 
-use crate::model::{Reference, VerseRange};
+use crate::model::{Lang, Reference, VerseRange};
+use crate::reference::format_reference;
 
 /// Limiar padrão de votos: oculta referências disputadas (votos negativos).
 pub const DEFAULT_MIN_VOTES: i64 = 1;
@@ -66,6 +67,64 @@ pub fn for_verse(
         },
     )?;
     rows.collect()
+}
+
+/// Rótulos de referências cruzadas locais agregados por **toda a passagem** (RAG
+/// leve): consulta cada versículo de `verse_numbers`, deduplica por referência
+/// (mantendo o maior nº de votos), ordena por votos e limita o total. Se
+/// `verse_numbers` vier vazio, ancora no versículo inicial de `reference`. Melhor
+/// esforço — ignora erros de consulta por versículo.
+pub fn passage_labels(
+    conn: &Connection,
+    reference: &Reference,
+    verse_numbers: &[u16],
+    lang: Lang,
+    limit: usize,
+) -> Vec<String> {
+    use std::collections::HashMap;
+
+    // Salvaguarda: sem números (ex.: capítulo inteiro), ancora no início da ref.
+    let fallback;
+    let verses: &[u16] = if verse_numbers.is_empty() {
+        fallback = [match reference.verses {
+            VerseRange::Single(v) => v,
+            VerseRange::Range { start, .. } => start,
+            VerseRange::WholeChapter => 1,
+        }];
+        &fallback
+    } else {
+        verse_numbers
+    };
+
+    let per = limit.max(1);
+    let mut best: HashMap<Reference, i64> = HashMap::new();
+    for &v in verses {
+        if let Ok(hits) = for_verse(
+            conn,
+            reference.book,
+            reference.chapter,
+            v,
+            DEFAULT_MIN_VOTES,
+            per,
+        ) {
+            for h in hits {
+                best.entry(h.reference)
+                    .and_modify(|votes| *votes = (*votes).max(h.votes))
+                    .or_insert(h.votes);
+            }
+        }
+    }
+
+    let mut all: Vec<(Reference, i64)> = best.into_iter().collect();
+    all.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.book.cmp(&b.0.book))
+            .then_with(|| a.0.chapter.cmp(&b.0.chapter))
+    });
+    all.into_iter()
+        .take(limit)
+        .map(|(r, _)| format_reference(&r, lang))
+        .collect()
 }
 
 #[cfg(test)]
@@ -132,5 +191,41 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn passage_labels_aggregate_dedupe_and_format() {
+        let store = seeded();
+        let reference = Reference::whole_chapter(45, 3);
+        // Agrega o v.23 (e um v.99 sem xref): só os não-disputados, ordenados por
+        // votos, formatados no idioma. O intervalo (1.1-3) vira "Genesis 1:1-3".
+        let labels = passage_labels(store.conn(), &reference, &[23, 99], Lang::En, 20);
+        assert_eq!(labels, vec!["Romans 6:23", "Genesis 1:1-3"]);
+        // PT usa o separador "." e nomes em português.
+        let pt = passage_labels(store.conn(), &reference, &[23], Lang::Pt, 20);
+        assert_eq!(pt[0], "Romanos 6.23");
+    }
+
+    #[test]
+    fn passage_labels_empty_numbers_fall_back_to_reference() {
+        let store = seeded();
+        // Sem números: ancora no versículo inicial da referência (v.23).
+        let labels = passage_labels(
+            store.conn(),
+            &Reference::single(45, 3, 23),
+            &[],
+            Lang::En,
+            20,
+        );
+        assert!(labels.contains(&"Romans 6:23".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn passage_labels_limit_caps_total() {
+        let store = seeded();
+        let reference = Reference::whole_chapter(45, 3);
+        let labels = passage_labels(store.conn(), &reference, &[23], Lang::En, 1);
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0], "Romans 6:23"); // o mais votado
     }
 }
