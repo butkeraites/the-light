@@ -6,6 +6,7 @@
 //! - `import --version kjv,alm1911 [--db PATH] [--seed-dir DIR] [--force] [--offline]`
 
 mod import;
+mod scholarly_import;
 mod xref_import;
 
 use std::process::ExitCode;
@@ -25,6 +26,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     match args.first().map(String::as_str) {
         Some("import") => import::run_import(&args[1..]),
         Some("import-xref") => xref_import::run(&args[1..]),
+        Some("import-scholarly") => scholarly_import::run(&args[1..]),
         Some("help") | Some("--help") | Some("-h") | None => {
             print_help();
             Ok(())
@@ -40,6 +42,7 @@ fn print_help() {
          COMANDOS:\n  \
          import --version <ids>   Importa versões livres para o banco\n  \
          import-xref              Importa referências cruzadas (OpenBible, CC-BY)\n  \
+         import-scholarly         Importa línguas originais + léxicos (STEPBible, CC-BY)\n  \
          help                     Mostra esta ajuda\n\n\
          OPÇÕES de `import`:\n  \
          --version <a,b>   Versões a importar (obrigatório)\n  \

@@ -49,6 +49,24 @@
 - **Riscos / notas:** (1) Atribuição CC-BY é vinculante. (2) Versão da licença não fixada na página canônica — tratar como CC-BY genérico. (3) Votos incluem negativos (refs disputadas, mínimo ~ -86) — usar threshold configurável. (4) Refs em versificação ESV/protestante — drift menor contra KJV/Almeida (ambas 66 livros protestante). (5) Coluna "To Verse" pode ser RANGE (`Book.Ch.V-Book.Ch.V`) — expandir no parse.
 - **Mirror alternativo (backup, git-pinnable):** https://raw.githubusercontent.com/scrollmapper/bible_databases/master/sources/extras/cross_references.txt — TSV plano não compactado, mesma schema, CC-BY (atribuir OpenBible, NÃO scrollmapper). Snapshot 2024-11-04 com contagens de voto ligeiramente desatualizadas; fixar commit SHA. Use a fonte direta OpenBible para votos mais frescos; use o mirror para uma URL raw estável de um único curl.
 
+### 1.4 LÍNGUAS ORIGINAIS + LÉXICO — STEPBible (Phase 1) ✅
+> **Verificado em: 2026-06-18** (live-fetch do README e dos arquivos de release; licença lida no cabeçalho dos próprios arquivos). Importados por `cargo run -p xtask -- import-scholarly`.
+
+- **Fonte:** STEPBible-Data (Tyndale House, Cambridge) — https://github.com/STEPBible/STEPBible-Data
+- **Licença:** **CC BY 4.0** (declarada no README e no cabeçalho de cada arquivo: "Data created by www.STEPBible.org based on work at Tyndale House Cambridge (CC BY 4.0)").
+- **Atribuição exigida (verbatim, gravada em `scholarly_sources.attribution` e exibida no rodapé de procedência de cada estudo):** `Credit it to 'STEP Bible' linked to www.STEPBible.org (data based on work at Tyndale House, Cambridge; CC BY 4.0)`
+- **Cláusula extra (CC BY + pedido):** ao alterar os dados, registrar e disponibilizar as mudanças; preferir referir ao repo original como fonte. Não modificamos a semântica dos dados (só reformatamos para SQLite), e gravamos a procedência — compatível com a cláusula.
+- **Conjuntos embarcados (todos CC-BY, um único parser TSV STEP):**
+  - **TAHOT** (Hebrew OT, 4 arquivos Gen-Deu/Jos-Est/Job-Sng/Isa-Mal) → `original_tokens` (testamento OT). ~305.577 tokens.
+  - **TAGNT** (Greek NT, 2 arquivos Mat-Jhn/Act-Rev) → `original_tokens` (testamento NT). ~142.096 tokens.
+  - **TBESH** (léxico breve hebraico, BDB-derivado, CC-BY pela STEP) → `lexicon`. ~11.682 entradas.
+  - **TBESG** (léxico breve grego, CC-BY pela STEP) → `lexicon`. ~11.035 entradas.
+- **Chaveamento:** tokens e léxico usam o **Strong estendido/desambiguado** (ex.: `H7225G`, `G0976`) → join exato; cobertura token→léxico medida em **99,9% OT / 99,8% NT**.
+- **Versificação:** a coluna de referência primária do TAHOT/TAGNT usa a **versificação inglesa (NRSV)**, que casa com KJV/ALM1911. Verificado em Sl 3 (a sobrescrição hebraica NÃO é contada como v.1 — alinha ao KJV). Por isso o `versification_map` é **refinamento opcional**, não requisito para o grounding v1.
+- **Decisão "minimizar obrigações" (escolha do usuário):** usamos SÓ fontes STEPBible CC-BY. **Descartado** o `openscriptures/strongs` (digitalização **CC-BY-SA** *share-alike*) — a numeração de Strong já vem no TAHOT/TAGNT e as definições no TBESH/TBESG, tudo CC-BY, sem obrigação de *share-alike* sobre o DB derivado.
+- **Denylist (recusada por código, independente de licença):** `sblgnt`, `morphgnt` (texto SBLGNT sob EULA), `louwnida`, `bdag`, `halot` (léxicos proprietários). Nunca entram no DB nem no prompt.
+- **Impacto no artefato:** o DB embarcado cresce ~39 MB → ~68 MB. Dados vivem no arquivo `biblia.sqlite` (passo `import-scholarly`), **nunca** `include_str!` no binário.
+
 ---
 
 ## 2. Datasets CONSIDERADOS e REJEITADOS (com motivo)

@@ -10,7 +10,10 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
 /// Migrações SQL em ordem. O índice `i` corresponde a `user_version = i + 1`.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/v1_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/v1_initial.sql"),
+    include_str!("../migrations/v2_scholarly.sql"),
+];
 
 /// Versão de esquema mais recente conhecida por este binário.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -165,7 +168,7 @@ mod tests {
     fn fresh_db_is_migrated_to_latest() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 1);
+        assert_eq!(SCHEMA_VERSION, 2);
     }
 
     #[test]
@@ -173,6 +176,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let names = table_names(store.conn());
         for expected in [
+            // v1 — texto bíblico
             "translations",
             "books",
             "verses",
@@ -180,12 +184,32 @@ mod tests {
             "cross_references",
             "idx_verses_lookup",
             "idx_xref_from",
+            // v2 — dados acadêmicos (vazios até `import-scholarly`)
+            "scholarly_sources",
+            "original_tokens",
+            "lexicon",
+            "morph_legend",
+            "versification_map",
+            "idx_tokens_strongs",
+            "idx_lexicon_strongs",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),
                 "faltou `{expected}` em {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn scholarly_tables_are_empty_on_a_base_db() {
+        // O DB base (sem `import-scholarly`) tem o esquema v2 com tabelas vazias —
+        // este é o caso offline normal, não um erro. O grounding deve tolerá-lo.
+        let store = Store::open_in_memory().unwrap();
+        let n: i64 = store
+            .conn()
+            .query_row("SELECT count(*) FROM original_tokens", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]
