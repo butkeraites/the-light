@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 
-use the_light_core::ai::{self, Denomination, StudyDepth, StudyRequest};
+use the_light_core::ai::{self, Denomination, StudyDepth, StudyMode, StudyRequest};
 use the_light_core::config::Config;
 use the_light_core::reference::{format_reference, parse_reference};
 use the_light_core::userdata;
@@ -22,13 +22,21 @@ pub struct StudyArgs {
     /// Passagem (PT/EN), ex.: "Ef 2.8-9".
     pub reference: String,
 
+    /// Modo: academic | devotional | introductory | sermon (padrão: config).
+    #[arg(long)]
+    pub mode: Option<String>,
+
+    /// Salva o `--mode` informado como o modo padrão (em `config.toml`).
+    #[arg(long)]
+    pub remember: bool,
+
     /// Lente(s) denominacional(is), separadas por vírgula (compara se >1).
     #[arg(long, default_value = "presbiteriana")]
     pub lens: String,
 
-    /// Profundidade: geral | exegetico | palavras.
-    #[arg(long, default_value = "geral")]
-    pub depth: String,
+    /// Profundidade: geral | exegetico | palavras (padrão: implícita do modo).
+    #[arg(long)]
+    pub depth: Option<String>,
 
     /// Versão para o texto citado (CLI > config > kjv).
     #[arg(short, long)]
@@ -84,16 +92,41 @@ pub fn run(args: StudyArgs) -> ExitCode {
         return ExitCode::from(EXIT_USAGE);
     }
 
-    let depth: StudyDepth = match args.depth.parse() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(EXIT_USAGE);
-        }
-    };
-
     let config = Config::load().unwrap_or_default();
     let lang = config.language;
+
+    // Modo: CLI > config. Profundidade: CLI > implícita do modo.
+    let mode: StudyMode = match args.mode.as_deref() {
+        Some(s) => match s.parse() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(EXIT_USAGE);
+            }
+        },
+        None => config.study_mode,
+    };
+
+    let depth: StudyDepth = match args.depth.as_deref() {
+        Some(s) => match s.parse() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(EXIT_USAGE);
+            }
+        },
+        None => mode.implied_depth(),
+    };
+
+    // `--remember` grava o modo escolhido como padrão (não-fatal se falhar).
+    if args.remember {
+        let mut cfg = config.clone();
+        cfg.study_mode = mode;
+        match cfg.save() {
+            Ok(()) => eprintln!("Modo padrão salvo: {}", mode.name_pt()),
+            Err(e) => eprintln!("Aviso: não foi possível salvar o modo padrão: {e}"),
+        }
+    }
 
     let store = match ai_common::open_store(args.db.as_deref()) {
         Ok(s) => s,
@@ -133,6 +166,7 @@ pub fn run(args: StudyArgs) -> ExitCode {
         let req = StudyRequest {
             reference,
             reference_label: label.clone(),
+            mode,
             lens: *lens,
             depth,
             language: lang,
@@ -201,8 +235,9 @@ fn save_study(result: &ai::StudyResult) -> Result<(), u8> {
         return Err(EXIT_NOT_FOUND);
     }
     let slug = slugify(&format!(
-        "{}-{}",
+        "{}-{}-{}",
         result.reference_label,
+        result.mode.slug(),
         result.lens.slug()
     ));
     let path = dir.join(format!("{slug}.md"));

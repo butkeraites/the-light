@@ -5,6 +5,7 @@
 
 mod app;
 mod clipboard;
+mod scroll;
 mod terminal;
 mod theme;
 mod ui;

@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, Mous
 use ratatui::layout::Rect;
 
 use the_light_core::ai::{
-    self, build_provider, ChatMessage, ChatRole, KeyStore, LlmProvider, PROVIDERS,
+    self, build_provider, ChatMessage, ChatRole, KeyStore, LlmProvider, StudyMode, PROVIDERS,
 };
 use the_light_core::config::Config;
 use the_light_core::model::{Lang, Reference, SearchHit, TranslationId};
@@ -17,6 +17,8 @@ use the_light_core::source::{BibleSource, EmbeddedSource};
 use the_light_core::store::Store;
 use the_light_core::userdata::{Highlight, HighlightStore, Note, NoteStore, Session, SessionStore};
 use the_light_core::xref::{self, CrossRef};
+
+use crate::scroll::ScrollState;
 
 /// Temas disponíveis, ciclados pela tecla `t` e persistidos em `config.toml`.
 pub const THEMES: &[&str] = &["dark", "light", "none"];
@@ -118,8 +120,8 @@ pub struct AiPanel {
     pub refs: Vec<Reference>,
     /// Referência selecionada na lista de saltos.
     pub ref_selected: usize,
-    /// Rolagem vertical.
-    pub scroll: u16,
+    /// Rolagem vertical da conversa (offset + clamp em [`ScrollState`]).
+    pub scroll: ScrollState,
 }
 
 impl AiPanel {
@@ -131,7 +133,7 @@ impl AiPanel {
             status: AiStatus::Idle,
             refs,
             ref_selected: 0,
-            scroll: 0,
+            scroll: ScrollState::default(),
         }
     }
 
@@ -150,6 +152,13 @@ pub struct SessionBrowser {
     /// Sessões salvas, da mais recente para a mais antiga.
     pub items: Vec<Session>,
     /// Item selecionado.
+    pub selected: usize,
+}
+
+/// Seletor do modo de estudo padrão (tecla `m`).
+#[derive(Debug, Clone)]
+pub struct ModePicker {
+    /// Modo selecionado (índice em [`StudyMode::all`]).
     pub selected: usize,
 }
 
@@ -272,6 +281,8 @@ pub struct App {
     pub settings: Option<Settings>,
     /// Navegador de conversas salvas, se aberto.
     pub sessions: Option<SessionBrowser>,
+    /// Seletor de modo de estudo padrão, se aberto.
+    pub mode_picker: Option<ModePicker>,
     /// Retângulo interno da área de leitura no último frame (origem da seleção).
     pub reader_inner: Option<Rect>,
     /// Seleção de texto via mouse em curso/fixada, se houver.
@@ -334,6 +345,7 @@ impl App {
             spinner: 0,
             settings: None,
             sessions: None,
+            mode_picker: None,
             reader_inner: None,
             selection: None,
             selection_text: String::new(),
@@ -664,7 +676,7 @@ impl App {
         let name = self.config.provider.trim().to_ascii_lowercase();
         let panel = self.ai.as_mut().unwrap();
         panel.session.push(ChatRole::User, question);
-        panel.scroll = u16::MAX; // rola até o fim
+        panel.scroll.jump_to_end(); // rola até o fim (clampado no próximo render)
         if name.is_empty() {
             panel.status = AiStatus::Error(
                 "nenhum provedor de IA configurado — pressione c para configurar".to_string(),
@@ -782,7 +794,11 @@ impl App {
 
     /// `true` se algum overlay modal está aberto (captura teclado/mouse).
     fn overlay_open(&self) -> bool {
-        self.show_help || self.ai.is_some() || self.settings.is_some() || self.sessions.is_some()
+        self.show_help
+            || self.ai.is_some()
+            || self.settings.is_some()
+            || self.sessions.is_some()
+            || self.mode_picker.is_some()
     }
 
     /// Limpa a seleção de texto do mouse e o texto copiável associado.
@@ -812,7 +828,17 @@ impl App {
     /// arrasto é grampeado ao retângulo. A cópia é diferida (ver
     /// [`App::take_copy_request`]); a roda rola pelos versículos.
     pub fn handle_mouse(&mut self, m: MouseEvent) {
-        // Overlays capturam tudo — não há seleção "por baixo" deles.
+        // Na conversa com a IA, a roda rola o overlay (clamp no `draw`); os
+        // demais eventos de mouse são ignorados sob o overlay.
+        if let Some(panel) = self.ai.as_mut() {
+            match m.kind {
+                MouseEventKind::ScrollDown => panel.scroll.down(MOUSE_SCROLL as u16),
+                MouseEventKind::ScrollUp => panel.scroll.up(MOUSE_SCROLL as u16),
+                _ => {}
+            }
+            return;
+        }
+        // Demais overlays capturam tudo — não há seleção "por baixo" deles.
         if self.overlay_open() {
             return;
         }
@@ -905,12 +931,10 @@ impl App {
                 }
                 // `a` continua a conversa (abre o campo de pergunta), exceto se ocupado.
                 KeyCode::Char('a') if !busy => followup = true,
-                KeyCode::Down | KeyCode::Char('j') => panel.scroll = panel.scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => panel.scroll = panel.scroll.saturating_sub(1),
-                KeyCode::PageDown | KeyCode::Char(' ') => {
-                    panel.scroll = panel.scroll.saturating_add(10)
-                }
-                KeyCode::PageUp => panel.scroll = panel.scroll.saturating_sub(10),
+                KeyCode::Down | KeyCode::Char('j') => panel.scroll.down(1),
+                KeyCode::Up | KeyCode::Char('k') => panel.scroll.up(1),
+                KeyCode::PageDown | KeyCode::Char(' ') => panel.scroll.down(10),
+                KeyCode::PageUp => panel.scroll.up(10),
                 // Seleciona entre as referências citadas.
                 KeyCode::Tab if n > 0 => panel.ref_selected = (panel.ref_selected + 1) % n,
                 KeyCode::BackTab if n > 0 => panel.ref_selected = (panel.ref_selected + n - 1) % n,
@@ -978,6 +1002,46 @@ impl App {
                     browser.selected = browser.items.len().saturating_sub(1);
                 }
             }
+        }
+    }
+
+    /// Abre o seletor de modo de estudo padrão (tecla `m`).
+    pub fn open_mode_picker(&mut self) {
+        let selected = StudyMode::all()
+            .iter()
+            .position(|m| *m == self.config.study_mode)
+            .unwrap_or(0);
+        self.mode_picker = Some(ModePicker { selected });
+    }
+
+    fn handle_mode_picker_key(&mut self, key: KeyEvent) {
+        let modes = StudyMode::all();
+        let mut commit: Option<StudyMode> = None;
+        if let Some(picker) = self.mode_picker.as_mut() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('m') => {
+                    self.mode_picker = None;
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if picker.selected + 1 < modes.len() {
+                        picker.selected += 1;
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    picker.selected = picker.selected.saturating_sub(1);
+                }
+                KeyCode::Enter => commit = modes.get(picker.selected).copied(),
+                _ => {}
+            }
+        }
+        if let Some(mode) = commit {
+            // Persiste como padrão (mesmo padrão de `Act::SetActive` das chaves).
+            self.config.study_mode = mode;
+            let _ = self.config.save();
+            self.mode_picker = None;
+            self.toast = Some(format!("Modo de estudo: {}", mode.name_pt()));
+            self.toast_ticks = TOAST_TICKS;
         }
     }
 
@@ -1081,6 +1145,10 @@ impl App {
             self.handle_sessions_key(key);
             return;
         }
+        if self.mode_picker.is_some() {
+            self.handle_mode_picker_key(key);
+            return;
+        }
         if self.input.is_some() {
             self.handle_input_key(key);
             return;
@@ -1118,6 +1186,7 @@ impl App {
             KeyCode::Char('a') => self.open_ask(),
             KeyCode::Char('c') => self.open_settings(),
             KeyCode::Char('s') => self.open_sessions(),
+            KeyCode::Char('m') => self.open_mode_picker(),
             KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('g') => {
                 self.input = Some(Input {
@@ -1265,6 +1334,27 @@ mod tests {
         for c in s.chars() {
             app.handle_key(key(KeyCode::Char(c)));
         }
+    }
+
+    #[test]
+    fn mode_picker_opens_seeds_navigates_and_closes() {
+        let mut app = seeded_app();
+        // Padrão é Introdutório (índice 2 em StudyMode::all()).
+        assert_eq!(app.config.study_mode, StudyMode::Introductory);
+        app.handle_key(key(KeyCode::Char('m')));
+        assert_eq!(
+            app.mode_picker.as_ref().expect("picker aberto").selected,
+            2,
+            "seleção semeada a partir do modo atual"
+        );
+        // Sobe até o topo (Acadêmico).
+        app.handle_key(key(KeyCode::Up));
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.mode_picker.as_ref().unwrap().selected, 0);
+        // Esc fecha sem alterar o padrão (não grava disco).
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.mode_picker.is_none());
+        assert_eq!(app.config.study_mode, StudyMode::Introductory);
     }
 
     fn seeded_app() -> App {
@@ -1643,6 +1733,22 @@ mod tests {
     }
 
     #[test]
+    fn wheel_scrolls_ai_panel_not_the_reader() {
+        let mut app = app_with_reader();
+        app.selected = 0;
+        app.ai = Some(panel_with_answer("resposta"));
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 5));
+        assert_eq!(
+            app.ai.as_ref().unwrap().scroll.offset(),
+            MOUSE_SCROLL as u16
+        );
+        // Sob o overlay, a roda NÃO mexe no cursor de versículo do leitor.
+        assert_eq!(app.selected, 0);
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 5));
+        assert_eq!(app.ai.as_ref().unwrap().scroll.offset(), 0);
+    }
+
+    #[test]
     fn any_key_cancels_selection() {
         let mut app = app_with_reader();
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
@@ -1881,7 +1987,7 @@ mod tests {
         // ↓ rola o overlay; NÃO move o cursor de versículo.
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.selected, before, "o overlay captura a navegação");
-        assert_eq!(app.ai.as_ref().unwrap().scroll, 1);
+        assert_eq!(app.ai.as_ref().unwrap().scroll.offset(), 1);
         app.handle_key(key(KeyCode::Esc));
         assert!(app.ai.is_none(), "Esc fecha o overlay");
     }

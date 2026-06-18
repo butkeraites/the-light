@@ -19,8 +19,11 @@ use the_light_core::model::{Lang, Reference, VerseRange};
 use the_light_core::reference::{format_reference, scan_references, BOOKS};
 use the_light_core::search::{HL_END, HL_START};
 
+use the_light_core::ai::StudyMode;
+
 use crate::app::{
-    AiPanel, AiStatus, App, Focus, Input, InputKind, Selection, SessionBrowser, SettingsMode,
+    AiPanel, AiStatus, App, Focus, Input, InputKind, ModePicker, Selection, SessionBrowser,
+    SettingsMode,
 };
 use crate::theme::Palette;
 
@@ -101,6 +104,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let Some(browser) = &app.sessions {
         draw_sessions(frame, browser, area, &pal);
+    }
+    if let Some(picker) = &app.mode_picker {
+        draw_mode_picker(frame, picker, area, &pal);
     }
 }
 
@@ -629,7 +635,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         return;
     }
     let hints = format!(
-        " ↑↓ versículo · n/p cap · v versão · / buscar · g ir · x refs · t tema [{}] · a IA · s conversas · c chaves · ? ajuda",
+        " ↑↓ versículo · n/p cap · v versão · / buscar · g ir · x refs · t tema [{}] · a IA · s conversas · m modo · c chaves · ? ajuda",
         app.theme()
     );
     frame.render_widget(Paragraph::new(hints).style(pal.fg(pal.dim)), area);
@@ -650,6 +656,7 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
         Line::from("  v           trocar versão"),
         Line::from("  a           perguntar/continuar a conversa com a IA"),
         Line::from("  s           conversas salvas (retomar)"),
+        Line::from("  m           modo de estudo padrão (acadêmico/devocional/…)"),
         Line::from("  c           configurar provedor/chaves de IA"),
         Line::from("  /           buscar (full-text)"),
         Line::from("  g           ir para referência (ex.: Jo 3.16)"),
@@ -673,9 +680,57 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
     frame.render_widget(Paragraph::new(lines).block(blk), popup);
 }
 
+/// Overlay do seletor de modo de estudo padrão (tecla `m`).
+fn draw_mode_picker(frame: &mut Frame, picker: &ModePicker, area: Rect, pal: &Palette) {
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "Modo de estudo padrão",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    for (i, m) in StudyMode::all().iter().enumerate() {
+        let cursor = if i == picker.selected { "❯ " } else { "  " };
+        let style = if i == picker.selected {
+            pal.selection_style()
+        } else {
+            pal.fg(pal.accent)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{cursor}{}", m.name_pt()),
+            style,
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("    {}", m.description_pt()),
+            pal.fg(pal.dim),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ↑↓ move · Enter define padrão · Esc fecha",
+        pal.fg(pal.dim),
+    )));
+
+    let popup = centered_rect(74, lines.len() as u16 + 2, area);
+    let blk = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
+        .border_style(pal.fg(pal.accent))
+        .title(Line::from(Span::styled(
+            " Modo de estudo ",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(blk), popup);
+}
+
 /// Overlay rolável com a **conversa** com a IA (tecla `a`; navegada por `s`).
-fn draw_ai_panel(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
-    let Some(panel) = &app.ai else {
+fn draw_ai_panel(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
+    // Captura o que vem de `&App` antes de emprestar `app.ai` mutavelmente: o
+    // render normaliza o offset de rolagem guardado em `panel.scroll`.
+    let lang = app.lang();
+    let spinner = app.spinner;
+    let Some(panel) = app.ai.as_mut() else {
         return;
     };
     let session = &panel.session;
@@ -719,7 +774,7 @@ fn draw_ai_panel(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
     match &panel.status {
         AiStatus::Pending => {
             const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-            let sp = FRAMES[(app.spinner as usize) % FRAMES.len()];
+            let sp = FRAMES[(spinner as usize) % FRAMES.len()];
             lines.push(Line::from(Span::styled(
                 format!("{sp} consultando… (Esc cancela)"),
                 pal.fg(pal.dim),
@@ -743,7 +798,7 @@ fn draw_ai_panel(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
             } else {
                 "    ".to_string()
             };
-            let label = format_reference(r, app.lang());
+            let label = format_reference(r, lang);
             let style = if i == panel.ref_selected {
                 pal.selection_style()
             } else {
@@ -756,19 +811,10 @@ fn draw_ai_panel(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         }
     }
 
-    // Rolagem com clamp: `scroll` grande (ex.: u16::MAX) prende no fim.
-    let body_h = inner.height.saturating_sub(1).max(1);
-    let max_scroll = (lines.len() as u16).saturating_sub(body_h);
-    let scroll = panel.scroll.min(max_scroll);
-
+    // Limpa o fundo e delega rolagem + clamp ao parágrafo rolável (reserva 1
+    // linha no fundo para o rodapé de atalhos). Mantém quebra e clamp juntos.
     frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0))
-            .block(blk),
-        popup,
-    );
+    panel.scroll.render(frame, popup, blk, Text::from(lines), 1);
 
     // Rodapé (sobrescreve a última linha interna) com os atalhos da conversa.
     if inner.height >= 1 {
@@ -1360,8 +1406,46 @@ mod tests {
             session: s,
             status: AiStatus::Idle,
             ref_selected: 0,
-            scroll: 0,
+            scroll: crate::scroll::ScrollState::default(),
         }
+    }
+
+    #[test]
+    fn ai_panel_scrolls_to_end_of_long_answer() {
+        let mut app = seeded_app();
+        // Resposta longa de parágrafo único: poucas linhas LÓGICAS, muitas linhas
+        // VISUAIS após a quebra. O clamp da rolagem precisa usar a altura quebrada
+        // (não `lines.len()`), senão o fim fica inalcançável.
+        let long = format!("{}ZZSENTINELAZZ", "palavra ".repeat(400));
+        let mut panel = convo(&long);
+        panel.scroll.jump_to_end(); // pede o fim
+        app.ai = Some(panel);
+        let text = render(&mut app);
+        assert!(
+            text.contains("ZZSENTINELAZZ"),
+            "rolar até o fim de uma resposta longa deveria revelar o final"
+        );
+    }
+
+    #[test]
+    fn up_arrow_responds_right_after_scrolling_to_end() {
+        // Regressão: `submit_ask` rola ao fim (`to_end`); antes, `u16::MAX` grudava
+        // e ↑ não respondia. Agora o render normaliza o offset e ↑ sobe na hora.
+        let mut app = seeded_app();
+        let long = format!("{}ZZFIMZZ", "palavra ".repeat(400));
+        let mut panel = convo(&long);
+        panel.scroll.jump_to_end();
+        app.ai = Some(panel);
+        let _ = render(&mut app); // normaliza "fim" → máximo real
+        let at_end = app.ai.as_ref().unwrap().scroll.offset();
+        assert!(at_end > 0, "o fim virou um offset real, não u16::MAX");
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()));
+        let _ = render(&mut app);
+        assert_eq!(
+            app.ai.as_ref().unwrap().scroll.offset(),
+            at_end - 1,
+            "↑ deveria subir uma linha imediatamente após ir ao fim"
+        );
     }
 
     #[test]

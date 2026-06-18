@@ -14,8 +14,8 @@ pub mod study;
 pub use keys::KeyStore;
 pub use providers::{build_provider, estimate_cost_usd};
 pub use study::{
-    ask, ask_context, ask_session, numbered_passage, numbered_verses, study, StudyRequest,
-    StudyResult,
+    ask, ask_context, ask_session, numbered_passage, numbered_verses, split_sections, study,
+    StudyRequest, StudyResult, StudySection,
 };
 
 use std::str::FromStr;
@@ -131,6 +131,108 @@ impl StudyDepth {
     }
 }
 
+/// Modo de estudo: molda a **estrutura** (seções) e o **tom** da saída.
+///
+/// Compõe com a lente ([`Denomination`], a voz hermenêutica) e a profundidade
+/// ([`StudyDepth`], um modificador, restrito por [`StudyMode::implied_depth`]).
+/// Cada modo tem um *blueprint* de seções definido em [`prompts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StudyMode {
+    /// Acadêmico/exegético: rigoroso, fundamentado, com aparato (notas + bibliografia).
+    Academic,
+    /// Devocional: reflexão e aplicação pessoal.
+    Devotional,
+    /// Introdutório: primeiro contato, linguagem acessível.
+    Introductory,
+    /// Pregação/ensino: esboço homilético.
+    Sermon,
+}
+
+impl StudyMode {
+    /// Slug estável (usado em nomes de arquivo, prompts override e config).
+    pub fn slug(self) -> &'static str {
+        match self {
+            StudyMode::Academic => "academic",
+            StudyMode::Devotional => "devotional",
+            StudyMode::Introductory => "introductory",
+            StudyMode::Sermon => "sermon",
+        }
+    }
+
+    /// Nome em português (para exibição).
+    pub fn name_pt(self) -> &'static str {
+        match self {
+            StudyMode::Academic => "Acadêmico",
+            StudyMode::Devotional => "Devocional",
+            StudyMode::Introductory => "Introdutório",
+            StudyMode::Sermon => "Pregação",
+        }
+    }
+
+    /// Descrição curta (para o seletor de modo na TUI).
+    pub fn description_pt(self) -> &'static str {
+        match self {
+            StudyMode::Academic => {
+                "Exegese fundamentada: texto, línguas originais, contexto, aparato e bibliografia."
+            }
+            StudyMode::Devotional => {
+                "Reflexão e aplicação pessoal: mensagem central, vida e oração."
+            }
+            StudyMode::Introductory => {
+                "Primeiro contato: linguagem acessível, termos explicados, ideia principal."
+            }
+            StudyMode::Sermon => "Preparo de pregação/ensino: tema, esboço, ilustrações e apelo.",
+        }
+    }
+
+    /// Todos os modos (ordem estável para listagem).
+    pub fn all() -> [StudyMode; 4] {
+        [
+            StudyMode::Academic,
+            StudyMode::Devotional,
+            StudyMode::Introductory,
+            StudyMode::Sermon,
+        ]
+    }
+
+    /// Profundidade implícita do modo quando o usuário não a informa.
+    pub fn implied_depth(self) -> StudyDepth {
+        match self {
+            StudyMode::Academic | StudyMode::Sermon => StudyDepth::Exegetical,
+            StudyMode::Devotional | StudyMode::Introductory => StudyDepth::Overview,
+        }
+    }
+
+    /// Se o modo injeta dados léxicos verificados (grego/hebraico) no prompt.
+    pub fn wants_lexical(self) -> bool {
+        matches!(self, StudyMode::Academic | StudyMode::Sermon)
+    }
+
+    /// Se o modo emite aparato acadêmico (notas SBL + bibliografia + paper).
+    pub fn emits_apparatus(self) -> bool {
+        matches!(self, StudyMode::Academic)
+    }
+}
+
+impl FromStr for StudyMode {
+    type Err = AiError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "academic" | "academico" | "acadêmico" | "exegese" => Ok(StudyMode::Academic),
+            "devotional" | "devocional" | "devo" => Ok(StudyMode::Devotional),
+            "introductory" | "introdutorio" | "introdutório" | "intro" | "first-contact" => {
+                Ok(StudyMode::Introductory)
+            }
+            "sermon" | "pregacao" | "pregação" | "sermao" | "sermão" | "homiletico" => {
+                Ok(StudyMode::Sermon)
+            }
+            other => Err(AiError::UnknownMode(other.to_string())),
+        }
+    }
+}
+
 /// Erros da camada de IA.
 #[derive(Debug, thiserror::Error)]
 pub enum AiError {
@@ -149,6 +251,9 @@ pub enum AiError {
     /// Profundidade desconhecida.
     #[error("profundidade desconhecida: `{0}`")]
     UnknownDepth(String),
+    /// Modo de estudo desconhecido.
+    #[error("modo desconhecido: `{0}` (use: academic, devotional, introductory, sermon)")]
+    UnknownMode(String),
     /// Erro de I/O.
     #[error("erro de I/O: {0}")]
     Io(#[from] std::io::Error),
@@ -309,6 +414,42 @@ mod tests {
             StudyDepth::WordStudy
         );
         assert!("deep".parse::<StudyDepth>().is_err());
+    }
+
+    #[test]
+    fn mode_parsing_and_metadata() {
+        assert_eq!(
+            "academico".parse::<StudyMode>().unwrap(),
+            StudyMode::Academic
+        );
+        assert_eq!(
+            "devocional".parse::<StudyMode>().unwrap(),
+            StudyMode::Devotional
+        );
+        assert_eq!(
+            "intro".parse::<StudyMode>().unwrap(),
+            StudyMode::Introductory
+        );
+        assert_eq!("pregacao".parse::<StudyMode>().unwrap(), StudyMode::Sermon);
+        assert!("jedi".parse::<StudyMode>().is_err());
+
+        // Apenas o modo acadêmico emite aparato; acadêmico e pregação usam léxico.
+        assert!(StudyMode::Academic.emits_apparatus());
+        assert!(!StudyMode::Devotional.emits_apparatus());
+        assert!(StudyMode::Academic.wants_lexical());
+        assert!(StudyMode::Sermon.wants_lexical());
+        assert!(!StudyMode::Introductory.wants_lexical());
+
+        assert_eq!(StudyMode::Academic.implied_depth(), StudyDepth::Exegetical);
+        assert_eq!(StudyMode::Devotional.implied_depth(), StudyDepth::Overview);
+        assert_eq!(StudyMode::all().len(), 4);
+
+        // O slug coincide com a forma serializada (rename_all = lowercase).
+        assert_eq!(StudyMode::Academic.slug(), "academic");
+        assert_eq!(
+            serde_json::to_string(&StudyMode::Sermon).unwrap(),
+            "\"sermon\""
+        );
     }
 
     #[test]

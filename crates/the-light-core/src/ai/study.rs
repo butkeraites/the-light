@@ -4,7 +4,9 @@
 
 use crate::model::{Lang, Passage, Reference};
 
-use super::{prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyDepth};
+use super::{
+    prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyDepth, StudyMode,
+};
 
 /// Pedido de estudo de uma passagem.
 pub struct StudyRequest<'a> {
@@ -12,6 +14,8 @@ pub struct StudyRequest<'a> {
     pub reference: Reference,
     /// Referência formatada (ex.: "Ef 2.8-9").
     pub reference_label: String,
+    /// Modo de estudo (molda estrutura e tom).
+    pub mode: StudyMode,
     /// Lente denominacional.
     pub lens: Denomination,
     /// Profundidade.
@@ -24,12 +28,23 @@ pub struct StudyRequest<'a> {
     pub cross_references: Vec<String>,
 }
 
+/// Uma seção estruturada da interpretação (cabeçalho `## ` + corpo).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StudySection {
+    /// Cabeçalho da seção (sem o `## `).
+    pub heading: String,
+    /// Corpo da seção (texto entre este cabeçalho e o próximo).
+    pub body: String,
+}
+
 /// Resultado de um estudo: separa o texto citado (banco) da interpretação (LLM).
 pub struct StudyResult {
     /// Referência estudada.
     pub reference: Reference,
     /// Referência formatada.
     pub reference_label: String,
+    /// Modo usado.
+    pub mode: StudyMode,
     /// Lente usada.
     pub lens: Denomination,
     /// Profundidade.
@@ -38,8 +53,11 @@ pub struct StudyResult {
     pub language: Lang,
     /// Texto citado (numerado), extraído do banco local — sempre fiel.
     pub passage_text: String,
-    /// Interpretação gerada pelo modelo.
+    /// Interpretação gerada pelo modelo (texto bruto, completo).
     pub interpretation: String,
+    /// Interpretação fatiada por seção (`## `). Vazio quando o modelo não usou
+    /// cabeçalhos — nesse caso `to_markdown` cai no formato histórico.
+    pub sections: Vec<StudySection>,
     /// Provedor usado.
     pub provider: String,
     /// Modelo usado.
@@ -83,6 +101,39 @@ pub fn ask_context(label: &str, numbered_passage: &str, related: &[String]) -> S
     format!("{label}:\n{numbered_passage}\n\nReferências relacionadas: {related}")
 }
 
+/// Fatia o texto do modelo em seções por cabeçalho `## `. Linhas antes do
+/// primeiro cabeçalho são descartadas (o prompt proíbe preâmbulo). Devolve
+/// **vazio** quando não há nenhum `## ` — sinal para `to_markdown` usar o
+/// formato histórico (compatibilidade byte-a-byte).
+pub fn split_sections(raw: &str) -> Vec<StudySection> {
+    let mut sections: Vec<StudySection> = Vec::new();
+    let mut cur: Option<StudySection> = None;
+    for line in raw.lines() {
+        if let Some(heading) = line.strip_prefix("## ") {
+            if let Some(done) = cur.take() {
+                sections.push(done);
+            }
+            cur = Some(StudySection {
+                heading: heading.trim().to_string(),
+                body: String::new(),
+            });
+        } else if let Some(s) = cur.as_mut() {
+            // Evita acumular linhas em branco logo após o cabeçalho.
+            if !s.body.is_empty() || !line.trim().is_empty() {
+                s.body.push_str(line);
+                s.body.push('\n');
+            }
+        }
+    }
+    if let Some(done) = cur.take() {
+        sections.push(done);
+    }
+    for s in sections.iter_mut() {
+        s.body = s.body.trim_end().to_string();
+    }
+    sections
+}
+
 fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
     let xrefs = if req.cross_references.is_empty() {
         "(nenhuma)".to_string()
@@ -90,12 +141,13 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
         req.cross_references.join("; ")
     };
     format!(
-        "Faça um estudo bíblico da passagem {referencia}, pela lente {lente}, \
+        "Faça um estudo bíblico ({modo}) da passagem {referencia}, pela lente {lente}, \
          profundidade {prof}.\n\n\
          TEXTO DA PASSAGEM (acervo local — cite por número de versículo):\n{texto}\n\n\
          REFERÊNCIAS CRUZADAS LOCAIS (contexto, use se ajudar):\n{xrefs}\n\n\
-         Produza a interpretação seguindo as regras do sistema (citar versículos, \
-         separar texto de interpretação, marcar a lente, sinalizar divergências).",
+         Produza a interpretação seguindo as regras do sistema (estrutura de seções do modo, \
+         citar versículos, separar texto de interpretação, marcar a lente, sinalizar divergências).",
+        modo = req.mode.name_pt(),
         referencia = req.reference_label,
         lente = req.lens.name_pt(),
         prof = req.depth.name_pt(),
@@ -107,17 +159,20 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
 /// Executa o estudo: chama o provedor e devolve um [`StudyResult`].
 pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResult> {
     let passage_text = numbered_passage(req.passage);
-    let system = prompts::system_prompt(req.lens, req.depth, req.language);
+    let system = prompts::system_prompt(req.mode, req.lens, req.depth, req.language);
     let user = user_prompt(req, &passage_text);
     let interpretation = provider.complete(&system, &user)?;
+    let sections = split_sections(&interpretation);
     Ok(StudyResult {
         reference: req.reference,
         reference_label: req.reference_label.clone(),
+        mode: req.mode,
         lens: req.lens,
         depth: req.depth,
         language: req.language,
         passage_text,
         interpretation,
+        sections,
         provider: provider.name().to_string(),
         model: provider.model().to_string(),
     })
@@ -125,25 +180,57 @@ pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResu
 
 impl StudyResult {
     /// Renderiza o estudo em Markdown (texto citado + interpretação + aviso).
+    ///
+    /// Quando o modelo não usou cabeçalhos (`sections` vazio), usa o **formato
+    /// histórico, byte a byte** — contrato preservado pelos testes existentes.
+    /// Com seções, renderiza a estrutura do modo (e acrescenta a linha `- Modo:`).
     pub fn to_markdown(&self) -> String {
-        format!(
+        if self.sections.is_empty() {
+            return format!(
+                "# Estudo — {referencia}\n\n\
+                 - Lente: {lente}\n\
+                 - Profundidade: {prof}\n\
+                 - Gerado por: {provider}/{model}\n\n\
+                 ## Texto citado\n\n{texto}\n\n\
+                 ## Interpretação ({lente})\n\n{interp}\n\n\
+                 ---\n\
+                 _Texto bíblico do acervo local; a interpretação é gerada por IA sob a lente \
+                 {lente} e pode conter erros — confira sempre as Escrituras._\n",
+                referencia = self.reference_label,
+                lente = self.lens.name_pt(),
+                prof = self.depth.name_pt(),
+                provider = self.provider,
+                model = self.model,
+                texto = self.passage_text,
+                interp = self.interpretation,
+            );
+        }
+
+        let mut out = format!(
             "# Estudo — {referencia}\n\n\
+             - Modo: {modo}\n\
              - Lente: {lente}\n\
              - Profundidade: {prof}\n\
              - Gerado por: {provider}/{model}\n\n\
-             ## Texto citado\n\n{texto}\n\n\
-             ## Interpretação ({lente})\n\n{interp}\n\n\
-             ---\n\
-             _Texto bíblico do acervo local; a interpretação é gerada por IA sob a lente \
-             {lente} e pode conter erros — confira sempre as Escrituras._\n",
+             ## Texto citado\n\n{texto}\n\n",
             referencia = self.reference_label,
+            modo = self.mode.name_pt(),
             lente = self.lens.name_pt(),
             prof = self.depth.name_pt(),
             provider = self.provider,
             model = self.model,
             texto = self.passage_text,
-            interp = self.interpretation,
-        )
+        );
+        for s in &self.sections {
+            out.push_str(&format!("## {}\n\n{}\n\n", s.heading, s.body));
+        }
+        out.push_str(&format!(
+            "---\n_Texto bíblico do acervo local; a interpretação é gerada por IA sob a lente \
+             {lente} (modo {modo}) e pode conter erros — confira sempre as Escrituras._\n",
+            lente = self.lens.name_pt(),
+            modo = self.mode.name_pt(),
+        ));
+        out
     }
 }
 
@@ -232,12 +319,14 @@ mod tests {
         let req = StudyRequest {
             reference: p.reference,
             reference_label: "Efésios 2.8-9".to_string(),
+            mode: StudyMode::Academic,
             lens: Denomination::Lutheran,
             depth: StudyDepth::Exegetical,
             language: Lang::Pt,
             passage: &p,
             cross_references: vec!["Romanos 3.24".to_string()],
         };
+        // Resposta sem cabeçalhos `## ` → caminho histórico (compatibilidade).
         let provider = MockLlmProvider::new("A salvação é dom de Deus (v.8).");
         let result = study(&provider, &req).unwrap();
 
@@ -248,6 +337,7 @@ mod tests {
         assert!(result.passage_text.contains("9 Não vem das obras"));
         assert_eq!(result.interpretation, "A salvação é dom de Deus (v.8).");
         assert_eq!(result.provider, "mock");
+        assert!(result.sections.is_empty(), "sem `## ` → sem seções");
 
         let md = result.to_markdown();
         assert!(md.contains("# Estudo — Efésios 2.8-9"));
@@ -256,6 +346,55 @@ mod tests {
         assert!(md.contains("## Interpretação"));
         assert!(md.contains("A salvação é dom de Deus"));
         assert!(md.contains("confira sempre as Escrituras"));
+        // Invariante: o caminho histórico NÃO inclui a linha de modo.
+        assert!(
+            !md.contains("- Modo:"),
+            "caminho histórico deve ser byte-idêntico"
+        );
+    }
+
+    #[test]
+    fn structured_sections_render_mode_and_headings() {
+        let p = passage();
+        let req = StudyRequest {
+            reference: p.reference,
+            reference_label: "Efésios 2.8-9".to_string(),
+            mode: StudyMode::Academic,
+            lens: Denomination::Presbyterian,
+            depth: StudyDepth::Exegetical,
+            language: Lang::Pt,
+            passage: &p,
+            cross_references: vec![],
+        };
+        let provider = MockLlmProvider::new(
+            "## Texto e tradução\nO texto fala da graça.\n\n## Síntese teológica\nA fé é dom.",
+        );
+        let result = study(&provider, &req).unwrap();
+
+        assert_eq!(result.sections.len(), 2);
+        assert_eq!(result.sections[0].heading, "Texto e tradução");
+        assert_eq!(result.sections[0].body, "O texto fala da graça.");
+        assert_eq!(result.sections[1].heading, "Síntese teológica");
+
+        let md = result.to_markdown();
+        assert!(md.contains("- Modo: Acadêmico"));
+        assert!(md.contains("## Texto citado"));
+        assert!(md.contains("## Texto e tradução"));
+        assert!(md.contains("## Síntese teológica"));
+        assert!(md.contains("confira sempre as Escrituras"));
+    }
+
+    #[test]
+    fn split_sections_drops_preamble_and_trims() {
+        let raw = "preâmbulo ignorado\n## Um\nlinha a\nlinha b\n\n## Dois\nsó isto\n";
+        let s = split_sections(raw);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].heading, "Um");
+        assert_eq!(s[0].body, "linha a\nlinha b");
+        assert_eq!(s[1].heading, "Dois");
+        assert_eq!(s[1].body, "só isto");
+        // Sem cabeçalhos → vazio (gatilho do formato histórico).
+        assert!(split_sections("sem cabeçalho nenhum").is_empty());
     }
 
     #[test]

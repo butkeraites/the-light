@@ -9,10 +9,18 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ai::StudyMode;
 use crate::model::Lang;
 
 /// Chaves configuráveis (para `config set/get/list`).
-pub const KEYS: &[&str] = &["versions", "language", "theme", "font-size", "provider"];
+pub const KEYS: &[&str] = &[
+    "versions",
+    "language",
+    "theme",
+    "font-size",
+    "provider",
+    "study-mode",
+];
 
 /// Conector de versão protegida (lida ao vivo via API, com chave do usuário).
 ///
@@ -50,9 +58,17 @@ pub struct Config {
     /// Provedor de IA ativo (`anthropic`/`openai`/`ollama`); vazio = nenhum.
     /// Não é segredo; as chaves ficam fora do `config.toml` (ver `ai::KeyStore`).
     pub provider: String,
+    /// Modo de estudo padrão (sobrescrito por `--mode` ou pelo seletor da TUI).
+    #[serde(default = "default_study_mode")]
+    pub study_mode: StudyMode,
     /// Conectores de versões protegidas (opt-in, lidas ao vivo).
     #[serde(default)]
     pub connectors: Vec<Connector>,
+}
+
+/// Modo de estudo padrão (introdutório — o ponto de partida mais acessível).
+fn default_study_mode() -> StudyMode {
+    StudyMode::Introductory
 }
 
 impl Default for Config {
@@ -63,6 +79,7 @@ impl Default for Config {
             theme: "auto".to_string(),
             font_size: None,
             provider: String::new(),
+            study_mode: default_study_mode(),
             connectors: Vec::new(),
         }
     }
@@ -81,7 +98,10 @@ pub enum ConfigError {
     #[error("erro ao serializar config: {0}")]
     Serialize(#[from] toml::ser::Error),
     /// Chave de configuração desconhecida.
-    #[error("chave desconhecida: {0:?} (válidas: versions, language, theme, font-size, provider)")]
+    #[error(
+        "chave desconhecida: {0:?} \
+         (válidas: versions, language, theme, font-size, provider, study-mode)"
+    )]
     UnknownKey(String),
     /// Valor inválido para a chave.
     #[error("valor inválido para {key}: {value:?}")]
@@ -186,6 +206,13 @@ impl Config {
                 }
             }
             "provider" => self.provider = value.trim().to_ascii_lowercase(),
+            "study-mode" => {
+                self.study_mode =
+                    StudyMode::from_str(value).map_err(|_| ConfigError::BadValue {
+                        key: "study-mode".to_string(),
+                        value: value.to_string(),
+                    })?;
+            }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
         Ok(())
@@ -203,6 +230,7 @@ impl Config {
                     .unwrap_or_else(|| "none".to_string()),
             ),
             "provider" => Some(self.provider.clone()),
+            "study-mode" => Some(self.study_mode.slug().to_string()),
             _ => None,
         }
     }
@@ -245,6 +273,37 @@ mod tests {
         assert_eq!(c.get("font-size").as_deref(), Some("16"));
         c.set("font_size", "none").unwrap(); // aceita underscore e "none"
         assert_eq!(c.get("font-size").as_deref(), Some("none"));
+
+        // study-mode aceita aliases PT/EN e devolve o slug canônico.
+        c.set("study-mode", "academico").unwrap();
+        assert_eq!(c.get("study-mode").as_deref(), Some("academic"));
+        assert_eq!(c.study_mode, StudyMode::Academic);
+        c.set("study_mode", "devotional").unwrap(); // underscore normalizado
+        assert_eq!(c.get("study-mode").as_deref(), Some("devotional"));
+        assert!(matches!(
+            c.set("study-mode", "klingon"),
+            Err(ConfigError::BadValue { .. })
+        ));
+    }
+
+    #[test]
+    fn default_study_mode_is_introductory_and_persists() {
+        assert_eq!(Config::default().study_mode, StudyMode::Introductory);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut c = Config::default();
+        c.set("study-mode", "sermon").unwrap();
+        c.save_to(&path).unwrap();
+        assert_eq!(
+            Config::load_from(&path).unwrap().study_mode,
+            StudyMode::Sermon
+        );
+        // Config antigo sem o campo carrega com o padrão (serde default).
+        std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+        assert_eq!(
+            Config::load_from(&path).unwrap().study_mode,
+            StudyMode::Introductory
+        );
     }
 
     #[test]
