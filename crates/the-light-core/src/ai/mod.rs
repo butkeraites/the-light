@@ -6,12 +6,14 @@
 //! [`keys::KeyStore`]). A saída sempre separa **texto citado** (do banco local,
 //! exato) de **interpretação** (do modelo) — ver `SPEC.md` §6.2.
 
+pub mod citation;
 pub mod keys;
 pub mod lexicon;
 pub mod prompts;
 pub mod providers;
 pub mod study;
 
+pub use citation::{Citation, CitationCollector, CitationKind};
 pub use keys::KeyStore;
 pub use lexicon::{verified_lexicon, LexicalEntry, VerifiedLexicon, VerifiedOutput};
 pub use providers::{build_provider, estimate_cost_usd};

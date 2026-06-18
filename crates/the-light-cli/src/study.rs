@@ -52,9 +52,17 @@ pub struct StudyArgs {
     #[arg(long)]
     pub model: Option<String>,
 
-    /// Salva o estudo em `studies/` (Markdown).
+    /// Salva o estudo em `studies/` (Markdown + sidecar `.citations.json`).
     #[arg(long)]
     pub save: bool,
+
+    /// Imprime o paper acadêmico (notas SBL + bibliografia) no stdout.
+    #[arg(long)]
+    pub academic: bool,
+
+    /// Exporta o paper acadêmico para um arquivo (.md/.pdf/.docx via pandoc).
+    #[arg(long)]
+    pub export: Option<PathBuf>,
 
     /// Caminho do banco (padrão: diretório de dados do usuário).
     #[arg(long)]
@@ -175,6 +183,7 @@ pub fn run(args: StudyArgs) -> ExitCode {
     let mut succeeded = 0usize;
     let mut failed = 0usize;
     let mut save_failed = false;
+    let mut export_parts: Vec<String> = Vec::new();
 
     for (i, lens) in lenses.iter().enumerate() {
         let req = StudyRequest {
@@ -193,7 +202,15 @@ pub fn run(args: StudyArgs) -> ExitCode {
                 if i > 0 {
                     println!("\n———\n");
                 }
-                print!("{}", result.to_markdown());
+                // stdout: paper acadêmico se pedido, senão o estudo legível.
+                if args.academic {
+                    print!("{}", result.to_academic_markdown(lang));
+                } else {
+                    print!("{}", result.to_markdown());
+                }
+                if args.export.is_some() {
+                    export_parts.push(result.to_academic_markdown(lang));
+                }
                 for w in &result.warnings {
                     eprintln!("⚠ {w}");
                 }
@@ -219,12 +236,30 @@ pub fn run(args: StudyArgs) -> ExitCode {
         }
     }
 
+    // Exporta o paper acadêmico (junta as lentes com separador, se houver mais de uma).
+    let mut export_failed = false;
+    if let Some(path) = &args.export {
+        if export_parts.is_empty() {
+            eprintln!("Nada a exportar (nenhuma lente produziu resultado).");
+            export_failed = true;
+        } else {
+            let doc = export_parts.join("\n\n---\n\n");
+            match crate::export::export_document(&doc, path) {
+                Ok(()) => println!("Paper exportado para {}", path.display()),
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    export_failed = true;
+                }
+            }
+        }
+    }
+
     // Em comparação de lentes, deixa claro o resultado parcial; saída != 0 se algo
     // falhou (convenção Unix), mesmo que parte tenha sido impressa.
     if failed > 0 && succeeded > 0 {
         eprintln!("Atenção: {failed} de {total} lentes falharam (as demais foram impressas).");
     }
-    let exit = if failed > 0 || save_failed {
+    let exit = if failed > 0 || save_failed || export_failed {
         EXIT_NOT_FOUND
     } else {
         EXIT_OK
@@ -262,6 +297,13 @@ fn save_study(result: &ai::StudyResult) -> Result<(), u8> {
     if let Err(e) = the_light_core::util::atomic_write(&path, result.to_markdown().as_bytes()) {
         eprintln!("Erro ao gravar o estudo: {e}");
         return Err(EXIT_NOT_FOUND);
+    }
+    // Sidecar com as citações verificáveis (permite re-exportar sem re-rodar a IA).
+    if !result.citations.is_empty() {
+        if let Ok(json) = the_light_core::ai::citation::to_json(&result.citations) {
+            let sidecar = dir.join(format!("{slug}.citations.json"));
+            let _ = the_light_core::util::atomic_write(&sidecar, json.as_bytes());
+        }
     }
     println!("_Salvo em {}_", path.display());
     Ok(())

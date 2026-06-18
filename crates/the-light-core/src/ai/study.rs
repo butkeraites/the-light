@@ -4,6 +4,9 @@
 
 use crate::model::{Lang, Passage, Reference};
 
+use std::collections::HashSet;
+
+use super::citation::{self, Citation, CitationCollector, CitationKind};
 use super::lexicon::{self, VerifiedLexicon};
 use super::{
     prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyDepth, StudyMode,
@@ -66,6 +69,9 @@ pub struct StudyResult {
     /// Avisos de verificação (ex.: Strong citado fora do acervo). Vazio quando
     /// nada foi sinalizado — preserva a saída histórica byte a byte.
     pub warnings: Vec<String>,
+    /// Citações verificáveis (léxico + fontes) para o aparato acadêmico.
+    /// Construídas do banco, NUNCA pelo modelo. Vazio fora do modo acadêmico.
+    pub citations: Vec<Citation>,
     /// Provedor usado.
     pub provider: String,
     /// Modelo usado.
@@ -190,6 +196,14 @@ pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResu
     } else {
         Vec::new()
     };
+    // Citações verificáveis (só no modo com aparato). Construídas do banco.
+    let citations = if req.mode.emits_apparatus() {
+        let mut c = CitationCollector::new();
+        c.from_verified_lexicon(&req.verified_lexicon);
+        c.into_vec()
+    } else {
+        Vec::new()
+    };
     Ok(StudyResult {
         reference: req.reference,
         reference_label: req.reference_label.clone(),
@@ -201,6 +215,7 @@ pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResu
         interpretation,
         sections,
         warnings,
+        citations,
         provider: provider.name().to_string(),
         model: provider.model().to_string(),
     })
@@ -275,6 +290,97 @@ impl StudyResult {
             s.push_str(&format!("- {w}\n"));
         }
         s
+    }
+
+    /// Renderiza o estudo como um **paper acadêmico**: metadados (YAML p/ pandoc),
+    /// texto citado, análise com notas de rodapé SBL, bibliografia e rodapé de
+    /// procedência. As notas são ancoradas de forma **determinística** a partir
+    /// das citações verificáveis — o modelo só emite âncoras `[V:Strong]`; aqui
+    /// validamos e trocamos por marcadores `[^chave]`, descartando as inválidas.
+    pub fn to_academic_markdown(&self, lang: Lang) -> String {
+        let valid: HashSet<String> = self
+            .citations
+            .iter()
+            .filter(|c| c.kind == CitationKind::Lexicon)
+            .map(|c| c.key.clone())
+            .collect();
+
+        // Análise: seções (com âncoras reescritas) ou interpretação única.
+        let analysis = if self.sections.is_empty() {
+            format!(
+                "## Análise\n\n{}\n\n",
+                citation::rewrite_anchors(&self.interpretation, &valid)
+            )
+        } else {
+            let mut a = String::new();
+            for s in &self.sections {
+                a.push_str(&format!(
+                    "## {}\n\n{}\n\n",
+                    s.heading,
+                    citation::rewrite_anchors(&s.body, &valid)
+                ));
+            }
+            a
+        };
+
+        let mut out = format!(
+            "---\n\
+             title: \"Estudo Exegético — {referencia}\"\n\
+             author: \"The Light — {provider}/{model}\"\n\
+             lang: \"{langcode}\"\n\
+             ---\n\n\
+             ## Texto (acervo local)\n\n{texto}\n\n{analysis}",
+            referencia = self.reference_label,
+            provider = self.provider,
+            model = self.model,
+            langcode = lang.code(),
+            texto = self.passage_text,
+            analysis = analysis,
+        );
+
+        // Notas: somente as citações efetivamente referenciadas no texto.
+        let notes: Vec<&Citation> = self
+            .citations
+            .iter()
+            .filter(|c| c.kind == CitationKind::Lexicon)
+            .filter(|c| analysis.contains(&format!("[^{}]", c.key)))
+            .collect();
+        if !notes.is_empty() {
+            out.push_str("## Notas\n\n");
+            for c in &notes {
+                out.push_str(&format!(
+                    "[^{}]: {}\n\n",
+                    c.key,
+                    citation::sbl_footnote(c, lang)
+                ));
+            }
+        }
+
+        // Bibliografia (obras de referência + web), alfabética.
+        let mut bib: Vec<String> = self
+            .citations
+            .iter()
+            .filter(|c| c.kind.in_bibliography())
+            .map(citation::sbl_bibliography_entry)
+            .collect();
+        bib.sort();
+        bib.dedup();
+        if !bib.is_empty() {
+            out.push_str("## Bibliografia\n\n");
+            for b in &bib {
+                out.push_str(&format!("- {b}\n"));
+            }
+            out.push('\n');
+        }
+
+        out.push_str(&citation::provenance_footer(
+            &self.citations,
+            &self.provider,
+            &self.model,
+            lang,
+        ));
+        out.push_str(&self.warnings_block());
+        out
     }
 }
 
@@ -472,6 +578,46 @@ mod tests {
         assert_eq!(flagged.warnings.len(), 1, "{:?}", flagged.warnings);
         assert!(flagged.warnings[0].contains("G9999"));
         assert!(flagged.to_markdown().contains("## Avisos de verificação"));
+    }
+
+    #[test]
+    fn academic_markdown_has_footnotes_bibliography_and_provenance() {
+        let p = passage();
+        let vl = VerifiedLexicon {
+            entries: vec![lexicon::LexicalEntry {
+                strongs: "H7225".into(),
+                lemma: Some("rēʾšît".into()),
+                translit: None,
+                gloss: Some("beginning".into()),
+                occurrences: 1,
+                testament: "OT".into(),
+            }],
+            sources: vec!["STEP Bible (CC BY 4.0)".into()],
+        };
+        let req = StudyRequest {
+            reference: p.reference,
+            reference_label: "Gênesis 1.1".to_string(),
+            mode: StudyMode::Academic,
+            lens: Denomination::Presbyterian,
+            depth: StudyDepth::Exegetical,
+            language: Lang::Pt,
+            passage: &p,
+            cross_references: vec![],
+            verified_lexicon: vl,
+        };
+        let provider = MockLlmProvider::new("## Análise lexical\nO termo [V:H7225] abre o relato.");
+        let r = study(&provider, &req).unwrap();
+        let md = r.to_academic_markdown(Lang::Pt);
+
+        assert!(md.contains("title: \"Estudo Exegético — Gênesis 1.1\""));
+        assert!(md.contains("## Texto (acervo local)"));
+        assert!(md.contains("[^H7225]"), "âncora deve virar nota");
+        assert!(!md.contains("[V:H7225]"), "âncora original some");
+        assert!(md.contains("## Notas"));
+        assert!(md.contains("s.v."));
+        assert!(md.contains("## Bibliografia"));
+        assert!(md.contains("Tyndale House"));
+        assert!(md.contains("Gerado por IA"));
     }
 
     #[test]
