@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::Lang;
 
 use super::lexicon::VerifiedLexicon;
+use super::research::WebSource;
 
 /// Tipo de uma citação (define onde aparece e se é verificável).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +75,9 @@ pub struct Citation {
     /// Data de acesso (fontes web).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accessed: Option<String>,
+    /// Trecho verbatim (fontes web — citado entre aspas, nunca parafraseado).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
 }
 
 impl Citation {
@@ -90,6 +94,7 @@ impl Citation {
             license: None,
             attribution: None,
             accessed: None,
+            quote: None,
         }
     }
 }
@@ -156,6 +161,20 @@ impl CitationCollector {
         }
     }
 
+    /// Adiciona citações de fontes web (chave `W1`, `W2`, … = âncora `[W:n]`).
+    /// O trecho é guardado verbatim para a nota; nunca parafraseado.
+    pub fn from_web_results(&mut self, sources: &[WebSource]) {
+        for (i, ws) in sources.iter().enumerate() {
+            let mut c = Citation::empty(CitationKind::Web, format!("W{}", i + 1));
+            c.title = Some(ws.title.clone());
+            c.url = Some(ws.url.clone());
+            c.quote = Some(ws.snippet.clone());
+            c.accessed = Some(ws.fetched_at.format("%Y-%m-%d").to_string());
+            c.attribution = Some(ws.site.clone());
+            self.push(c);
+        }
+    }
+
     /// Devolve as citações na ordem de inserção.
     pub fn into_vec(self) -> Vec<Citation> {
         self.order
@@ -199,30 +218,49 @@ fn is_strong(tok: &str) -> bool {
     saw_digit
 }
 
-/// Troca âncoras `[V:Strong]` por marcadores de nota `[^Strong]` quando a chave
-/// é válida (consta de `valid`); âncoras inválidas são **removidas** (o texto
-/// segue sem elas). Determinístico — nunca confia no modelo para posicionar a
+/// Troca âncoras `[V:Strong]` (léxico) e `[W:n]` (fonte web) por marcadores de
+/// nota `[^chave]` quando a chave é válida (consta de `valid`); âncoras inválidas
+/// são **removidas**. Determinístico — nunca confia no modelo para posicionar a
 /// citação, só para emitir a âncora. Seguro para UTF-8 (opera por fatias).
 pub fn rewrite_anchors(text: &str, valid: &HashSet<String>) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(pos) = rest.find("[V:") {
+    loop {
+        let v = rest.find("[V:");
+        let w = rest.find("[W:");
+        let (pos, is_web) = match (v, w) {
+            (Some(a), Some(b)) if a <= b => (a, false),
+            (Some(_), Some(b)) => (b, true),
+            (Some(a), None) => (a, false),
+            (None, Some(b)) => (b, true),
+            (None, None) => break,
+        };
         out.push_str(&rest[..pos]);
-        let after = &rest[pos + 3..]; // "[V:" é ASCII → fatia válida
+        let after = &rest[pos + 3..]; // "[V:"/"[W:" são ASCII → fatia válida
         if let Some(close) = after.find(']') {
             let tok = &after[..close];
-            if is_strong(tok) {
-                let base = base_strong(tok);
-                if valid.contains(&base) {
-                    out.push_str(&format!("[^{base}]"));
+            let key = if is_web {
+                if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) {
+                    Some(format!("W{tok}"))
+                } else {
+                    None
+                }
+            } else if is_strong(tok) {
+                Some(base_strong(tok))
+            } else {
+                None
+            };
+            if let Some(k) = key {
+                if valid.contains(&k) {
+                    out.push_str(&format!("[^{k}]"));
                 }
                 // âncora inválida: removida (nada é escrito)
                 rest = &after[close + 1..];
                 continue;
             }
         }
-        // Não é uma âncora bem-formada: mantém "[V:" literal e segue.
-        out.push_str("[V:");
+        // Não é uma âncora bem-formada: mantém o prefixo literal e segue.
+        out.push_str(if is_web { "[W:" } else { "[V:" });
         rest = after;
     }
     out.push_str(rest);
@@ -243,13 +281,14 @@ pub fn sbl_footnote(c: &Citation, _lang: Lang) -> String {
             s
         }
         CitationKind::Web => {
-            let author = c.author.as_deref().unwrap_or("");
             let title = c.title.as_deref().unwrap_or("");
-            let mut s = if author.is_empty() {
-                format!("“{title}”")
-            } else {
-                format!("{author}, “{title}”")
-            };
+            let mut s = String::new();
+            // Trecho verbatim primeiro (P1-2: o leitor vê o texto buscado, não a
+            // paráfrase do modelo).
+            if let Some(q) = &c.quote {
+                s.push_str(&format!("“{q}” "));
+            }
+            s.push_str(&format!("— *{title}*"));
             if let Some(url) = &c.url {
                 s.push_str(&format!(", {url}"));
             }
@@ -280,6 +319,9 @@ pub fn sbl_bibliography_entry(c: &Citation) -> String {
     }
     if let Some(url) = &c.url {
         s.push_str(&format!(" {url}."));
+    }
+    if let Some(acc) = &c.accessed {
+        s.push_str(&format!(" Acesso em {acc}."));
     }
     if let Some(lic) = &c.license {
         s.push_str(&format!(" {lic}."));

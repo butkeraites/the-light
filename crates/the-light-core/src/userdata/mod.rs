@@ -70,3 +70,8 @@ pub fn reading_plans_dir() -> Result<PathBuf> {
 pub fn sessions_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("sessions"))
 }
+
+/// Diretório da pesquisa web opt-in (`research/`): cache + `log.jsonl`.
+pub fn research_dir() -> Result<PathBuf> {
+    Ok(data_dir()?.join("research"))
+}

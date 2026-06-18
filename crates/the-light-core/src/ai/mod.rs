@@ -11,12 +11,14 @@ pub mod keys;
 pub mod lexicon;
 pub mod prompts;
 pub mod providers;
+pub mod research;
 pub mod study;
 
 pub use citation::{Citation, CitationCollector, CitationKind};
 pub use keys::KeyStore;
 pub use lexicon::{verified_lexicon, LexicalEntry, VerifiedLexicon, VerifiedOutput};
 pub use providers::{build_provider, estimate_cost_usd};
+pub use research::{build_research_provider, ResearchProvider, WebSource, RESEARCH_BACKENDS};
 pub use study::{
     ask, ask_context, ask_session, numbered_passage, numbered_verses, split_sections, study,
     StudyRequest, StudyResult, StudySection,

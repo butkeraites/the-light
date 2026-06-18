@@ -2,12 +2,13 @@
 //! local + xrefs como RAG leve), chama o provedor e separa **texto citado** (do
 //! banco) de **interpretação** (do modelo).
 
-use crate::model::{Lang, Passage, Reference};
-
 use std::collections::HashSet;
+
+use crate::model::{Lang, Passage, Reference};
 
 use super::citation::{self, Citation, CitationCollector, CitationKind};
 use super::lexicon::{self, VerifiedLexicon};
+use super::research::WebSource;
 use super::{
     prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyDepth, StudyMode,
 };
@@ -34,6 +35,9 @@ pub struct StudyRequest<'a> {
     /// prompt apenas quando `mode.wants_lexical()`. Vazio quando não há cobertura
     /// ou o modo não usa léxico.
     pub verified_lexicon: VerifiedLexicon,
+    /// Fontes secundárias da web (pesquisa opt-in). Vazio = offline (padrão).
+    /// Quando presentes, são injetadas no prompt e citáveis por `[W:n]`.
+    pub web_sources: Vec<WebSource>,
 }
 
 /// Uma seção estruturada da interpretação (cabeçalho `## ` + corpo).
@@ -165,11 +169,30 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
     } else {
         String::new()
     };
+    // Bloco de fontes secundárias (pesquisa web opt-in), citáveis por [W:n].
+    let web = if req.web_sources.is_empty() {
+        String::new()
+    } else {
+        let mut b = String::from(
+            "\nFONTES SECUNDÁRIAS (recuperadas da web — cite por [W:n]; use SOMENTE estas, \
+             NÃO invente URLs nem extrapole além do trecho):\n",
+        );
+        for (i, ws) in req.web_sources.iter().enumerate() {
+            b.push_str(&format!(
+                "[W:{}] {} ({}) — {}\n",
+                i + 1,
+                ws.title,
+                ws.site,
+                ws.snippet
+            ));
+        }
+        b
+    };
     format!(
         "Faça um estudo bíblico ({modo}) da passagem {referencia}, pela lente {lente}, \
          profundidade {prof}.\n\n\
          TEXTO DA PASSAGEM (acervo local — cite por número de versículo):\n{texto}\n\n\
-         REFERÊNCIAS CRUZADAS LOCAIS (contexto, use se ajudar):\n{xrefs}\n{lexical}\n\
+         REFERÊNCIAS CRUZADAS LOCAIS (contexto, use se ajudar):\n{xrefs}\n{lexical}{web}\n\
          Produza a interpretação seguindo as regras do sistema (estrutura de seções do modo, \
          citar versículos, separar texto de interpretação, marcar a lente, sinalizar divergências).",
         modo = req.mode.name_pt(),
@@ -179,7 +202,30 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
         texto = passage_text,
         xrefs = xrefs,
         lexical = lexical,
+        web = web,
     )
+}
+
+/// Índices de fontes web citadas (`[W:n]`) num texto, para validar o intervalo.
+fn cited_web_indices(text: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find("[W:") {
+        let after = &rest[pos + 3..];
+        match after.find(']') {
+            Some(close) => {
+                let tok = &after[..close];
+                if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) {
+                    if let Ok(n) = tok.parse::<usize>() {
+                        out.push(n);
+                    }
+                }
+                rest = &after[close + 1..];
+            }
+            None => break,
+        }
+    }
+    out
 }
 
 /// Executa o estudo: chama o provedor e devolve um [`StudyResult`].
@@ -191,15 +237,27 @@ pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResu
     let sections = split_sections(&interpretation);
     // Verificação anti-alucinação: sinaliza Strong citados fora do acervo
     // (política `flag` — não altera o texto). Sem léxico, não há o que verificar.
-    let warnings = if req.mode.wants_lexical() {
+    let mut warnings = if req.mode.wants_lexical() {
         lexicon::verify(&interpretation, &req.verified_lexicon).warnings
     } else {
         Vec::new()
     };
-    // Citações verificáveis (só no modo com aparato). Construídas do banco.
+    // Fontes web citadas fora do intervalo (anti-fabricação de [W:n]).
+    if !req.web_sources.is_empty() {
+        for n in cited_web_indices(&interpretation) {
+            if n == 0 || n > req.web_sources.len() {
+                warnings.push(format!(
+                    "Fonte web citada [W:{n}] fora do intervalo (há {} fonte(s))",
+                    req.web_sources.len()
+                ));
+            }
+        }
+    }
+    // Citações verificáveis (só no modo com aparato). Construídas do banco/URLs.
     let citations = if req.mode.emits_apparatus() {
         let mut c = CitationCollector::new();
         c.from_verified_lexicon(&req.verified_lexicon);
+        c.from_web_results(&req.web_sources);
         c.into_vec()
     } else {
         Vec::new()
@@ -301,7 +359,7 @@ impl StudyResult {
         let valid: HashSet<String> = self
             .citations
             .iter()
-            .filter(|c| c.kind == CitationKind::Lexicon)
+            .filter(|c| matches!(c.kind, CitationKind::Lexicon | CitationKind::Web))
             .map(|c| c.key.clone())
             .collect();
 
@@ -338,11 +396,11 @@ impl StudyResult {
             analysis = analysis,
         );
 
-        // Notas: somente as citações efetivamente referenciadas no texto.
+        // Notas: somente as citações (léxico + web) referenciadas no texto.
         let notes: Vec<&Citation> = self
             .citations
             .iter()
-            .filter(|c| c.kind == CitationKind::Lexicon)
+            .filter(|c| matches!(c.kind, CitationKind::Lexicon | CitationKind::Web))
             .filter(|c| analysis.contains(&format!("[^{}]", c.key)))
             .collect();
         if !notes.is_empty() {
@@ -476,6 +534,7 @@ mod tests {
             passage: &p,
             cross_references: vec!["Romanos 3.24".to_string()],
             verified_lexicon: VerifiedLexicon::default(),
+            web_sources: vec![],
         };
         // Resposta sem cabeçalhos `## ` → caminho histórico (compatibilidade).
         let provider = MockLlmProvider::new("A salvação é dom de Deus (v.8).");
@@ -517,6 +576,7 @@ mod tests {
             passage: &p,
             cross_references: vec![],
             verified_lexicon: VerifiedLexicon::default(),
+            web_sources: vec![],
         };
         let provider = MockLlmProvider::new(
             "## Texto e tradução\nO texto fala da graça.\n\n## Síntese teológica\nA fé é dom.",
@@ -560,6 +620,7 @@ mod tests {
             passage: &p,
             cross_references: vec![],
             verified_lexicon: vl,
+            web_sources: vec![],
         };
 
         // Echo devolve o user_prompt: o bloco léxico é injetado no modo acadêmico.
@@ -604,6 +665,7 @@ mod tests {
             passage: &p,
             cross_references: vec![],
             verified_lexicon: vl,
+            web_sources: vec![],
         };
         let provider = MockLlmProvider::new("## Análise lexical\nO termo [V:H7225] abre o relato.");
         let r = study(&provider, &req).unwrap();
@@ -618,6 +680,50 @@ mod tests {
         assert!(md.contains("## Bibliografia"));
         assert!(md.contains("Tyndale House"));
         assert!(md.contains("Gerado por IA"));
+    }
+
+    #[test]
+    fn research_injects_web_block_cites_and_flags_out_of_range() {
+        use crate::ai::research::{MockResearchProvider, ResearchProvider};
+        let p = passage();
+        let web = MockResearchProvider::canned().search("x", 5).unwrap(); // 2 fontes
+        let mk = |prov: &dyn LlmProvider| {
+            let req = StudyRequest {
+                reference: p.reference,
+                reference_label: "Ef 2.8".to_string(),
+                mode: StudyMode::Academic,
+                lens: Denomination::Presbyterian,
+                depth: StudyDepth::Exegetical,
+                language: Lang::Pt,
+                passage: &p,
+                cross_references: vec![],
+                verified_lexicon: VerifiedLexicon::default(),
+                web_sources: web.clone(),
+            };
+            study(prov, &req).unwrap()
+        };
+
+        // O bloco de fontes secundárias entra no prompt (Echo devolve o prompt).
+        let echoed = mk(&EchoProvider);
+        assert!(echoed.interpretation.contains("FONTES SECUNDÁRIAS"));
+        assert!(echoed.interpretation.contains("[W:1]"));
+        let web_cites = echoed
+            .citations
+            .iter()
+            .filter(|c| c.kind == CitationKind::Web)
+            .count();
+        assert_eq!(web_cites, 2);
+
+        // Cita [W:1] (ok) e [W:3] (fora do intervalo — só há 2 fontes).
+        let inv = MockLlmProvider::new("## Análise\nVer [W:1] e também [W:3].");
+        let flagged = mk(&inv);
+        assert!(flagged.warnings.iter().any(|w| w.contains("[W:3]")));
+        let md = flagged.to_academic_markdown(Lang::Pt);
+        // A análise foi reescrita: [W:1]→nota, [W:3] removido (o aviso, à parte,
+        // ainda menciona [W:3] — é o relatório de verificação).
+        assert!(md.contains("Ver [^W1] e também"), "{md}");
+        // Trecho verbatim aparece na nota da fonte web.
+        assert!(md.contains("unmerited favor"));
     }
 
     #[test]

@@ -64,9 +64,79 @@ pub struct StudyArgs {
     #[arg(long)]
     pub export: Option<PathBuf>,
 
+    /// Habilita pesquisa web opt-in (consentimento por execução: mostra a
+    /// consulta que sai da máquina e registra em `research/log.jsonl`).
+    #[arg(long)]
+    pub research: bool,
+
+    /// Backend de pesquisa: `wikipedia` (sem chave) | `tavily` (chave) | `mock`.
+    #[arg(long, default_value = "wikipedia")]
+    pub research_backend: String,
+
     /// Caminho do banco (padrão: diretório de dados do usuário).
     #[arg(long)]
     pub db: Option<PathBuf>,
+}
+
+/// Executa a pesquisa web (consentimento por execução): deriva a consulta APENAS
+/// da referência + modo, mostra-a (sai da máquina), busca e registra no log.
+fn fetch_research(
+    backend: &str,
+    reference_label: &str,
+    lang: the_light_core::model::Lang,
+) -> Vec<the_light_core::ai::WebSource> {
+    // Consulta derivada só da referência (nunca de notas/histórico do usuário).
+    let query = format!("{reference_label} commentary exegesis");
+    eprintln!(
+        "🔎 Pesquisa web ({backend}): enviando a consulta \"{query}\" — isto SAI da sua máquina."
+    );
+
+    let key = the_light_core::ai::KeyStore::open_default()
+        .ok()
+        .and_then(|ks| ks.get("tavily").map(str::to_string));
+    let provider = match the_light_core::ai::build_research_provider(backend, key, lang.code()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Pesquisa web indisponível: {e}");
+            return Vec::new();
+        }
+    };
+    // Orçamento: uma consulta por estudo, no máximo 4 fontes.
+    let sources = match provider.search(&query, 4) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Pesquisa web falhou: {e}");
+            Vec::new()
+        }
+    };
+    log_research(backend, &query, sources.len());
+    if !sources.is_empty() {
+        eprintln!(
+            "🔎 {} fonte(s) recuperada(s); registro em research/log.jsonl",
+            sources.len()
+        );
+    }
+    sources
+}
+
+/// Anexa a consulta ao log de auditoria `research/log.jsonl` (best-effort).
+fn log_research(backend: &str, query: &str, results: usize) {
+    let Ok(dir) = userdata::research_dir() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let q = query.replace('\\', "\\\\").replace('"', "\\\"");
+    let line = format!("{{\"backend\":\"{backend}\",\"query\":\"{q}\",\"results\":{results}}}\n");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("log.jsonl"))
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 const EXIT_OK: u8 = 0;
@@ -172,6 +242,17 @@ pub fn run(args: StudyArgs) -> ExitCode {
         VerifiedLexicon::default()
     };
 
+    // Pesquisa web opt-in (offline é o padrão; nada sai da máquina sem --research).
+    let web_sources = if args.research {
+        fetch_research(
+            &args.research_backend,
+            &format_reference(&reference, lang),
+            lang,
+        )
+    } else {
+        Vec::new()
+    };
+
     let provider =
         match ai_common::resolve_provider(args.provider.clone(), args.model.clone(), &config) {
             Ok(p) => p,
@@ -196,6 +277,7 @@ pub fn run(args: StudyArgs) -> ExitCode {
             passage: &passage,
             cross_references: cross_references.clone(),
             verified_lexicon: verified_lexicon.clone(),
+            web_sources: web_sources.clone(),
         };
         match ai::study(provider.as_ref(), &req) {
             Ok(result) => {
