@@ -8,7 +8,9 @@ use std::process::ExitCode;
 
 use clap::Args;
 
-use the_light_core::ai::{self, Denomination, StudyDepth, StudyMode, StudyRequest};
+use the_light_core::ai::{
+    self, Denomination, StudyDepth, StudyMode, StudyRequest, VerifiedLexicon,
+};
 use the_light_core::config::Config;
 use the_light_core::reference::{format_reference, parse_reference};
 use the_light_core::userdata;
@@ -147,8 +149,20 @@ pub fn run(args: StudyArgs) -> ExitCode {
         );
     }
 
-    let cross_references =
-        xref::passage_labels(store.conn(), &reference, &passage.verse_numbers(), lang, 8);
+    // Modos acadêmico/pregação puxam mais xrefs e dados léxicos verificados.
+    let xref_limit = if mode.wants_lexical() { 16 } else { 8 };
+    let cross_references = xref::passage_labels(
+        store.conn(),
+        &reference,
+        &passage.verse_numbers(),
+        lang,
+        xref_limit,
+    );
+    let verified_lexicon = if mode.wants_lexical() {
+        ai::verified_lexicon(store.conn(), &reference, &passage.verse_numbers(), lang, 16)
+    } else {
+        VerifiedLexicon::default()
+    };
 
     let provider =
         match ai_common::resolve_provider(args.provider.clone(), args.model.clone(), &config) {
@@ -172,6 +186,7 @@ pub fn run(args: StudyArgs) -> ExitCode {
             language: lang,
             passage: &passage,
             cross_references: cross_references.clone(),
+            verified_lexicon: verified_lexicon.clone(),
         };
         match ai::study(provider.as_ref(), &req) {
             Ok(result) => {
@@ -179,6 +194,9 @@ pub fn run(args: StudyArgs) -> ExitCode {
                     println!("\n———\n");
                 }
                 print!("{}", result.to_markdown());
+                for w in &result.warnings {
+                    eprintln!("⚠ {w}");
+                }
                 print_cost(provider.as_ref(), &result);
                 succeeded += 1;
                 if args.save {

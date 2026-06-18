@@ -7,11 +7,13 @@
 //! exato) de **interpretação** (do modelo) — ver `SPEC.md` §6.2.
 
 pub mod keys;
+pub mod lexicon;
 pub mod prompts;
 pub mod providers;
 pub mod study;
 
 pub use keys::KeyStore;
+pub use lexicon::{verified_lexicon, LexicalEntry, VerifiedLexicon, VerifiedOutput};
 pub use providers::{build_provider, estimate_cost_usd};
 pub use study::{
     ask, ask_context, ask_session, numbered_passage, numbered_verses, split_sections, study,

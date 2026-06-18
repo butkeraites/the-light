@@ -4,6 +4,7 @@
 
 use crate::model::{Lang, Passage, Reference};
 
+use super::lexicon::{self, VerifiedLexicon};
 use super::{
     prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyDepth, StudyMode,
 };
@@ -26,6 +27,10 @@ pub struct StudyRequest<'a> {
     pub passage: &'a Passage,
     /// Referências cruzadas locais (rótulos), usadas como contexto.
     pub cross_references: Vec<String>,
+    /// Dados léxicos verificados (línguas originais + Strong) — injetados no
+    /// prompt apenas quando `mode.wants_lexical()`. Vazio quando não há cobertura
+    /// ou o modo não usa léxico.
+    pub verified_lexicon: VerifiedLexicon,
 }
 
 /// Uma seção estruturada da interpretação (cabeçalho `## ` + corpo).
@@ -58,6 +63,9 @@ pub struct StudyResult {
     /// Interpretação fatiada por seção (`## `). Vazio quando o modelo não usou
     /// cabeçalhos — nesse caso `to_markdown` cai no formato histórico.
     pub sections: Vec<StudySection>,
+    /// Avisos de verificação (ex.: Strong citado fora do acervo). Vazio quando
+    /// nada foi sinalizado — preserva a saída histórica byte a byte.
+    pub warnings: Vec<String>,
     /// Provedor usado.
     pub provider: String,
     /// Modelo usado.
@@ -140,11 +148,22 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
     } else {
         req.cross_references.join("; ")
     };
+    // Bloco léxico verificado só nos modos que o pedem (acadêmico/pregação).
+    let lexical = if req.mode.wants_lexical() {
+        format!(
+            "\nDADOS LÉXICOS:\n{}\n\nAo tratar de termos no original, cite EXCLUSIVAMENTE os \
+             Strong do bloco acima usando a marca [V:NÚMERO]; se o bloco indicar que não há \
+             dados, declare isso e NÃO invente números, lemas ou sentidos.\n",
+            lexicon::format_verified_block(&req.verified_lexicon, req.language),
+        )
+    } else {
+        String::new()
+    };
     format!(
         "Faça um estudo bíblico ({modo}) da passagem {referencia}, pela lente {lente}, \
          profundidade {prof}.\n\n\
          TEXTO DA PASSAGEM (acervo local — cite por número de versículo):\n{texto}\n\n\
-         REFERÊNCIAS CRUZADAS LOCAIS (contexto, use se ajudar):\n{xrefs}\n\n\
+         REFERÊNCIAS CRUZADAS LOCAIS (contexto, use se ajudar):\n{xrefs}\n{lexical}\n\
          Produza a interpretação seguindo as regras do sistema (estrutura de seções do modo, \
          citar versículos, separar texto de interpretação, marcar a lente, sinalizar divergências).",
         modo = req.mode.name_pt(),
@@ -153,6 +172,7 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
         prof = req.depth.name_pt(),
         texto = passage_text,
         xrefs = xrefs,
+        lexical = lexical,
     )
 }
 
@@ -163,6 +183,13 @@ pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResu
     let user = user_prompt(req, &passage_text);
     let interpretation = provider.complete(&system, &user)?;
     let sections = split_sections(&interpretation);
+    // Verificação anti-alucinação: sinaliza Strong citados fora do acervo
+    // (política `flag` — não altera o texto). Sem léxico, não há o que verificar.
+    let warnings = if req.mode.wants_lexical() {
+        lexicon::verify(&interpretation, &req.verified_lexicon).warnings
+    } else {
+        Vec::new()
+    };
     Ok(StudyResult {
         reference: req.reference,
         reference_label: req.reference_label.clone(),
@@ -173,6 +200,7 @@ pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResu
         passage_text,
         interpretation,
         sections,
+        warnings,
         provider: provider.name().to_string(),
         model: provider.model().to_string(),
     })
@@ -186,7 +214,7 @@ impl StudyResult {
     /// Com seções, renderiza a estrutura do modo (e acrescenta a linha `- Modo:`).
     pub fn to_markdown(&self) -> String {
         if self.sections.is_empty() {
-            return format!(
+            let mut out = format!(
                 "# Estudo — {referencia}\n\n\
                  - Lente: {lente}\n\
                  - Profundidade: {prof}\n\
@@ -204,6 +232,8 @@ impl StudyResult {
                 texto = self.passage_text,
                 interp = self.interpretation,
             );
+            out.push_str(&self.warnings_block());
+            return out;
         }
 
         let mut out = format!(
@@ -230,7 +260,21 @@ impl StudyResult {
             lente = self.lens.name_pt(),
             modo = self.mode.name_pt(),
         ));
+        out.push_str(&self.warnings_block());
         out
+    }
+
+    /// Bloco Markdown de avisos de verificação (vazio quando não há avisos —
+    /// mantém a saída byte a byte no caminho histórico).
+    fn warnings_block(&self) -> String {
+        if self.warnings.is_empty() {
+            return String::new();
+        }
+        let mut s = String::from("\n## Avisos de verificação\n\n");
+        for w in &self.warnings {
+            s.push_str(&format!("- {w}\n"));
+        }
+        s
     }
 }
 
@@ -325,6 +369,7 @@ mod tests {
             language: Lang::Pt,
             passage: &p,
             cross_references: vec!["Romanos 3.24".to_string()],
+            verified_lexicon: VerifiedLexicon::default(),
         };
         // Resposta sem cabeçalhos `## ` → caminho histórico (compatibilidade).
         let provider = MockLlmProvider::new("A salvação é dom de Deus (v.8).");
@@ -365,6 +410,7 @@ mod tests {
             language: Lang::Pt,
             passage: &p,
             cross_references: vec![],
+            verified_lexicon: VerifiedLexicon::default(),
         };
         let provider = MockLlmProvider::new(
             "## Texto e tradução\nO texto fala da graça.\n\n## Síntese teológica\nA fé é dom.",
@@ -382,6 +428,50 @@ mod tests {
         assert!(md.contains("## Texto e tradução"));
         assert!(md.contains("## Síntese teológica"));
         assert!(md.contains("confira sempre as Escrituras"));
+    }
+
+    #[test]
+    fn academic_mode_injects_lexical_block_and_flags_invented_strongs() {
+        let p = passage();
+        let vl = VerifiedLexicon {
+            entries: vec![lexicon::LexicalEntry {
+                strongs: "H7225".into(),
+                lemma: Some("rēʾšît".into()),
+                translit: None,
+                gloss: Some("beginning".into()),
+                occurrences: 1,
+                testament: "OT".into(),
+            }],
+            sources: vec!["STEP Bible".into()],
+        };
+        let mk = |mode: StudyMode, vl: VerifiedLexicon| StudyRequest {
+            reference: p.reference,
+            reference_label: "Efésios 2.8-9".to_string(),
+            mode,
+            lens: Denomination::Presbyterian,
+            depth: StudyDepth::Exegetical,
+            language: Lang::Pt,
+            passage: &p,
+            cross_references: vec![],
+            verified_lexicon: vl,
+        };
+
+        // Echo devolve o user_prompt: o bloco léxico é injetado no modo acadêmico.
+        let echoed = study(&EchoProvider, &mk(StudyMode::Academic, vl.clone())).unwrap();
+        assert!(echoed.interpretation.contains("DADOS LÉXICOS"));
+        assert!(echoed.interpretation.contains("[V:H7225]"));
+
+        // Modo devocional NÃO injeta léxico nem verifica.
+        let devo = study(&EchoProvider, &mk(StudyMode::Devotional, vl.clone())).unwrap();
+        assert!(!devo.interpretation.contains("DADOS LÉXICOS"));
+        assert!(devo.warnings.is_empty());
+
+        // Um Strong inventado fora do acervo é sinalizado e aparece no Markdown.
+        let inv = MockLlmProvider::new("Veja [V:H7225] (ok) e [V:G9999] (inventado).");
+        let flagged = study(&inv, &mk(StudyMode::Academic, vl)).unwrap();
+        assert_eq!(flagged.warnings.len(), 1, "{:?}", flagged.warnings);
+        assert!(flagged.warnings[0].contains("G9999"));
+        assert!(flagged.to_markdown().contains("## Avisos de verificação"));
     }
 
     #[test]
