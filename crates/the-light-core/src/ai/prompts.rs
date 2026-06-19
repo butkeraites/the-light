@@ -261,6 +261,21 @@ pub fn ask_system_prompt(lang: Lang) -> String {
     )
 }
 
+/// System prompt para um **follow-up dentro de um estudo**: preserva o modo e a
+/// lente para que as respostas sigam a mesma voz hermenêutica e fundamentação.
+pub fn study_followup_system_prompt(mode: StudyMode, lens: Denomination, lang: Lang) -> String {
+    format!(
+        "Você é um assistente de estudo bíblico continuando um estudo {modo} sob a lente \
+         {lente}. Mantenha essa voz hermenêutica e aprofunde a partir do estudo já \
+         apresentado no histórico. Ancore-se no texto e nas referências fornecidas; cite \
+         os versículos; se algo não estiver no contexto, diga isso; NÃO invente versículos \
+         ou referências. {idioma}",
+        modo = mode.name_pt(),
+        lente = lens.name_pt(),
+        idioma = language_line(lang),
+    )
+}
+
 /// System prompt para um modo/lente/profundidade, honrando override local.
 pub fn system_prompt(mode: StudyMode, lens: Denomination, depth: StudyDepth, lang: Lang) -> String {
     let dir = prompts_dir().ok();

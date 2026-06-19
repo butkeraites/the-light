@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ai::StudyMode;
+use crate::ai::{Denomination, StudyMode};
 use crate::model::Lang;
 
 /// Chaves configuráveis (para `config set/get/list`).
@@ -20,6 +20,7 @@ pub const KEYS: &[&str] = &[
     "font-size",
     "provider",
     "study-mode",
+    "study-lens",
 ];
 
 /// Conector de versão protegida (lida ao vivo via API, com chave do usuário).
@@ -61,6 +62,9 @@ pub struct Config {
     /// Modo de estudo padrão (sobrescrito por `--mode` ou pelo seletor da TUI).
     #[serde(default = "default_study_mode")]
     pub study_mode: StudyMode,
+    /// Lente denominacional padrão dos estudos (sobrescrita por `--lens`).
+    #[serde(default = "default_study_lens")]
+    pub study_lens: Denomination,
     /// Conectores de versões protegidas (opt-in, lidas ao vivo).
     #[serde(default)]
     pub connectors: Vec<Connector>,
@@ -69,6 +73,11 @@ pub struct Config {
 /// Modo de estudo padrão (introdutório — o ponto de partida mais acessível).
 fn default_study_mode() -> StudyMode {
     StudyMode::Introductory
+}
+
+/// Lente padrão (presbiteriana — igual ao padrão da CLI `light study`).
+fn default_study_lens() -> Denomination {
+    Denomination::Presbyterian
 }
 
 impl Default for Config {
@@ -80,6 +89,7 @@ impl Default for Config {
             font_size: None,
             provider: String::new(),
             study_mode: default_study_mode(),
+            study_lens: default_study_lens(),
             connectors: Vec::new(),
         }
     }
@@ -100,7 +110,7 @@ pub enum ConfigError {
     /// Chave de configuração desconhecida.
     #[error(
         "chave desconhecida: {0:?} \
-         (válidas: versions, language, theme, font-size, provider, study-mode)"
+         (válidas: versions, language, theme, font-size, provider, study-mode, study-lens)"
     )]
     UnknownKey(String),
     /// Valor inválido para a chave.
@@ -213,6 +223,13 @@ impl Config {
                         value: value.to_string(),
                     })?;
             }
+            "study-lens" | "lens" => {
+                self.study_lens =
+                    Denomination::from_str(value).map_err(|_| ConfigError::BadValue {
+                        key: "study-lens".to_string(),
+                        value: value.to_string(),
+                    })?;
+            }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
         Ok(())
@@ -231,6 +248,7 @@ impl Config {
             ),
             "provider" => Some(self.provider.clone()),
             "study-mode" => Some(self.study_mode.slug().to_string()),
+            "study-lens" => Some(self.study_lens.slug().to_string()),
             _ => None,
         }
     }

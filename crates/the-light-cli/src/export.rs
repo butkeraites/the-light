@@ -137,7 +137,7 @@ fn write_pdf(markdown: &str, output: Option<&Path>) -> ExitCode {
         eprintln!("`--format pdf` exige `--output <arquivo.pdf>`.");
         return ExitCode::from(EXIT_USAGE);
     };
-    match run_pandoc(markdown, output) {
+    match the_light_core::export::run_pandoc(markdown, output) {
         Ok(()) => {
             println!("Exportado para {}", output.display());
             ExitCode::from(EXIT_OK)
@@ -146,44 +146,5 @@ fn write_pdf(markdown: &str, output: Option<&Path>) -> ExitCode {
             eprintln!("{msg}");
             ExitCode::from(EXIT_NOT_FOUND)
         }
-    }
-}
-
-/// Converte Markdown para `output` via pandoc (formato inferido pela extensão:
-/// `.pdf`, `.docx`, …). Reutilizável pelo `study --export`.
-pub(crate) fn run_pandoc(markdown: &str, output: &Path) -> Result<(), String> {
-    use std::io::Write;
-    let mut tmp = tempfile::Builder::new()
-        .suffix(".md")
-        .tempfile()
-        .map_err(|e| format!("Erro ao criar arquivo temporário: {e}"))?;
-    tmp.write_all(markdown.as_bytes())
-        .map_err(|e| format!("Erro ao preparar Markdown: {e}"))?;
-    match std::process::Command::new("pandoc")
-        .arg(tmp.path())
-        .arg("-o")
-        .arg(output)
-        .status()
-    {
-        Ok(s) if s.success() => Ok(()),
-        Ok(_) => Err("pandoc falhou ao gerar o documento.".to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
-            "`pandoc` não encontrado. Exporte em Markdown e converta você mesmo:\n  \
-             light study \"<ref>\" --mode academico --export estudo.md && pandoc estudo.md -o {}",
-            output.display()
-        )),
-        Err(e) => Err(format!("Erro ao executar pandoc: {e}")),
-    }
-}
-
-/// Exporta um único documento Markdown para `output`, escolhendo Markdown
-/// (escrita atômica) ou pandoc pela extensão. Usado por `study --export`.
-pub(crate) fn export_document(markdown: &str, output: &Path) -> Result<(), String> {
-    match output.extension().and_then(|s| s.to_str()) {
-        Some("md") | Some("markdown") | None => {
-            the_light_core::util::atomic_write(output, markdown.as_bytes())
-                .map_err(|e| format!("Erro ao gravar {}: {e}", output.display()))
-        }
-        _ => run_pandoc(markdown, output),
     }
 }

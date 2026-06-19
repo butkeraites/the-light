@@ -13,6 +13,7 @@ use the_light_core::ai::{
 };
 use the_light_core::config::Config;
 use the_light_core::reference::{format_reference, parse_reference};
+use the_light_core::scholarly;
 use the_light_core::userdata;
 use the_light_core::xref;
 
@@ -213,6 +214,19 @@ pub fn run(args: StudyArgs) -> ExitCode {
         Err(code) => return code,
     };
 
+    // Modos acadêmico/pregação dependem dos dados léxicos instalados. Bloqueia
+    // ANTES de qualquer chamada de IA (não desperdiça a chave) e aponta o caminho.
+    if mode.wants_lexical() && !scholarly::is_populated(store.conn()) {
+        eprintln!(
+            "O modo {modo} fundamenta termos no original e requer os dados léxicos \
+             (línguas originais + Strong), que ainda não estão instalados.\n\
+             Instale-os pela TUI: abra `light tui` e pressione `d` (Dados acadêmicos) → instalar.\n\
+             Ou use um modo sem léxico (`--mode introdutorio` / `--mode devocional`).",
+            modo = mode.name_pt()
+        );
+        return ExitCode::from(EXIT_NOT_FOUND);
+    }
+
     let resolved =
         match ai_common::resolve_passage(&store, &config, &reference, args.version.as_deref()) {
             Ok(p) => p,
@@ -274,10 +288,11 @@ pub fn run(args: StudyArgs) -> ExitCode {
             lens: *lens,
             depth,
             language: lang,
-            passage: &passage,
+            passage: Some(&passage),
             cross_references: cross_references.clone(),
             verified_lexicon: verified_lexicon.clone(),
             web_sources: web_sources.clone(),
+            brief: None,
         };
         match ai::study(provider.as_ref(), &req) {
             Ok(result) => {
@@ -326,7 +341,7 @@ pub fn run(args: StudyArgs) -> ExitCode {
             export_failed = true;
         } else {
             let doc = export_parts.join("\n\n---\n\n");
-            match crate::export::export_document(&doc, path) {
+            match the_light_core::export::export_document(&doc, path) {
                 Ok(()) => println!("Paper exportado para {}", path.display()),
                 Err(msg) => {
                     eprintln!("{msg}");
@@ -369,7 +384,7 @@ fn save_study(result: &ai::StudyResult) -> Result<(), u8> {
         eprintln!("Erro ao criar `studies/`: {e}");
         return Err(EXIT_NOT_FOUND);
     }
-    let slug = slugify(&format!(
+    let slug = the_light_core::export::slugify(&format!(
         "{}-{}-{}",
         result.reference_label,
         result.mode.slug(),
@@ -389,20 +404,4 @@ fn save_study(result: &ai::StudyResult) -> Result<(), u8> {
     }
     println!("_Salvo em {}_", path.display());
     Ok(())
-}
-
-/// Slug simples para nome de arquivo (minúsculas, alfanumérico → `-`).
-fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut prev_dash = false;
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    out.trim_matches('-').to_string()
 }

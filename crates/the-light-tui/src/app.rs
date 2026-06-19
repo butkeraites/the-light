@@ -1,5 +1,6 @@
 //! Estado da TUI e tratamento de teclas (lógica pura, testável).
 
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use anyhow::{anyhow, Result};
@@ -7,11 +8,13 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, Mous
 use ratatui::layout::Rect;
 
 use the_light_core::ai::{
-    self, build_provider, ChatMessage, ChatRole, KeyStore, LlmProvider, StudyMode, PROVIDERS,
+    self, build_provider, ChatMessage, ChatRole, Denomination, KeyStore, LlmProvider, StudyDepth,
+    StudyMode, StudyRequest, VerifiedLexicon, PROVIDERS,
 };
 use the_light_core::config::Config;
 use the_light_core::model::{Lang, Reference, SearchHit, TranslationId};
 use the_light_core::reference::{format_reference, parse_reference, scan_references, BOOKS};
+use the_light_core::scholarly;
 use the_light_core::search::{self, SearchOptions};
 use the_light_core::source::{BibleSource, EmbeddedSource};
 use the_light_core::store::Store;
@@ -25,10 +28,6 @@ pub const THEMES: &[&str] = &["dark", "light", "none"];
 
 /// Duração (em ticks ociosos de ~80ms) da mensagem efêmera de status (toast).
 const TOAST_TICKS: u8 = 30;
-
-/// Quantos versículos a roda do mouse avança por entalhe (a captura do mouse
-/// substitui a rolagem nativa do terminal na tela alternativa).
-const MOUSE_SCROLL: isize = 3;
 
 /// Seleção de texto via mouse, **restrita à área de leitura**. As coordenadas são
 /// absolutas no terminal `(coluna, linha)`, sempre grampeadas ao retângulo dos
@@ -76,6 +75,12 @@ pub enum InputKind {
     Search,
     /// Pergunta livre à IA sobre o capítulo atual.
     Ask,
+    /// Prompt inicial de um estudo (assunto a estudar).
+    StudyBrief,
+    /// Resposta própria (custom) numa rodada de refinamento.
+    StudyCustom,
+    /// Foco do aprofundamento de um estudo concluído (opcional).
+    StudyDeepen,
 }
 
 /// Estado de uma entrada de texto (prompt inferior).
@@ -109,7 +114,97 @@ pub enum AiStatus {
     Error(String),
 }
 
-/// Overlay de conversa com a IA — uma **sessão** multi-turno e retomável.
+/// Um alvo clicável registrado pela renderização (ver [`App::click_targets`]).
+/// O `draw` empilha um `(Rect, ClickTarget)` por linha/botão; o clique é
+/// resolvido pelo alvo mais ao topo que contém o ponto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickTarget {
+    /// Linha de livro na lista (índice em [`BOOKS`]).
+    Book(usize),
+    /// Linha de versículo no leitor (índice em `verses`).
+    Verse(usize),
+    /// Linha do seletor de modo (índice em [`StudyMode::all`]).
+    ModeRow(usize),
+    /// Campo da lente na tela de preparo — clicar cicla para a próxima.
+    LensCycle,
+    /// Linha do navegador de conversas/estudos.
+    SessionRow(usize),
+    /// Linha de provedor nas configurações de IA.
+    SettingsRow(usize),
+    /// Opção de refinamento de escopo no assistente de estudo.
+    StudyOption(usize),
+    /// Botão de instalar os dados acadêmicos.
+    ScholarlyInstall,
+}
+
+impl ClickTarget {
+    /// `true` para alvos que pertencem a um overlay modal (não à tela de base de
+    /// livros/leitor). Usado para ignorar cliques "por baixo" de um modal.
+    fn is_overlay(self) -> bool {
+        !matches!(self, ClickTarget::Book(_) | ClickTarget::Verse(_))
+    }
+}
+
+/// Estado do **assistente de estudo** (prompt + refinamento em 3 rodadas) que
+/// vive dentro de um [`AiPanel`]. Ausente nas conversas de IA comuns.
+#[derive(Debug, Clone)]
+pub struct StudyFlow {
+    /// Modo escolhido no seletor.
+    pub mode: StudyMode,
+    /// Lente denominacional (do config).
+    pub lens: Denomination,
+    /// Assunto digitado pelo usuário.
+    pub brief: String,
+    /// Rodada atual (1..=3); 0 antes de enviar o assunto.
+    pub round: u8,
+    /// Pergunta da rodada atual (vazia enquanto aguarda a IA).
+    pub question: String,
+    /// Opções da rodada atual (vazias enquanto não há escolha a fazer).
+    pub options: Vec<String>,
+    /// Opção selecionada.
+    pub selected: usize,
+    /// Respostas anteriores `(pergunta, resposta)`.
+    pub prior: Vec<(String, String)>,
+}
+
+/// Contexto de um estudo **concluído**, retido para permitir aprofundar (`+`) e
+/// para responder follow-ups (`a`) na mesma lente/fundamentação.
+#[derive(Debug, Clone)]
+pub struct StudyContext {
+    /// Modo do estudo.
+    pub mode: StudyMode,
+    /// Lente denominacional aplicada.
+    pub lens: Denomination,
+    /// Profundidade da última passagem (avança ao aprofundar).
+    pub depth: StudyDepth,
+    /// Referência resolvida (capítulo âncora se temático).
+    pub reference: Reference,
+    /// Rótulo da referência (ou título curto do assunto, se temático).
+    pub reference_label: String,
+    /// `true` se o estudo foi fundamentado numa passagem concreta do acervo.
+    pub grounded: bool,
+    /// Texto de escopo (assunto + respostas) para focar o aprofundamento.
+    pub scope: String,
+}
+
+/// Mensagem da thread do estudo/refinamento para a UI.
+enum StudyMsg {
+    /// Uma rodada de refinamento: pergunta + opções.
+    Round {
+        question: String,
+        options: Vec<String>,
+    },
+    /// Estudo (ou aprofundamento) pronto: Markdown legível + contexto retido.
+    Done {
+        markdown: String,
+        ctx: Box<StudyContext>,
+    },
+    /// Erro.
+    Error(String),
+}
+
+/// Overlay de conversa com a IA — uma **sessão** multi-turno e retomável; também
+/// hospeda o assistente de estudo (ver [`StudyFlow`]).
 #[derive(Debug, Clone)]
 pub struct AiPanel {
     /// A conversa (turnos, contexto, provedor, modelo, timestamps).
@@ -122,6 +217,10 @@ pub struct AiPanel {
     pub ref_selected: usize,
     /// Rolagem vertical da conversa (offset + clamp em [`ScrollState`]).
     pub scroll: ScrollState,
+    /// Assistente de estudo em curso (refinamento de escopo), se houver.
+    pub study: Option<StudyFlow>,
+    /// Contexto de um estudo **concluído** (para aprofundar/responder no contexto).
+    pub study_done: Option<StudyContext>,
 }
 
 impl AiPanel {
@@ -134,6 +233,8 @@ impl AiPanel {
             refs,
             ref_selected: 0,
             scroll: ScrollState::default(),
+            study: None,
+            study_done: None,
         }
     }
 
@@ -155,11 +256,44 @@ pub struct SessionBrowser {
     pub selected: usize,
 }
 
-/// Seletor do modo de estudo padrão (tecla `m`).
+/// Tela de **preparo do estudo** (tecla `m`): escolhe o modo **e** a lente
+/// denominacional antes de digitar o assunto.
 #[derive(Debug, Clone)]
 pub struct ModePicker {
     /// Modo selecionado (índice em [`StudyMode::all`]).
     pub selected: usize,
+    /// Lente denominacional escolhida (inicia no padrão do config).
+    pub lens: Denomination,
+}
+
+/// Estado do painel de dados acadêmicos (tecla `d`).
+#[derive(Debug, Clone)]
+pub enum ScholarlyState {
+    /// Não instalado — mostra o convite à instalação.
+    Absent,
+    /// Instalado — contagens de tokens e entradas de léxico.
+    Installed { tokens: i64, lexicon: i64 },
+    /// Instalando — mensagem de progresso atual (com spinner).
+    Installing(String),
+    /// Erro na última tentativa.
+    Error(String),
+}
+
+/// Painel de instalação dos dados acadêmicos (línguas originais + léxico).
+#[derive(Debug, Clone)]
+pub struct ScholarlyPanel {
+    /// Estado atual.
+    pub state: ScholarlyState,
+}
+
+/// Mensagem da thread de instalação para a UI.
+enum ScholarlyMsg {
+    /// Mensagem de progresso de fase.
+    Progress(String),
+    /// Concluído: `(id, registros)` por conjunto.
+    Done(Vec<(String, usize)>),
+    /// Erro (mensagem).
+    Error(String),
 }
 
 /// Extrai as referências citadas num texto, únicas e na ordem de aparição.
@@ -199,6 +333,14 @@ fn session_title(question: &str) -> String {
     }
 }
 
+/// Próxima/anterior lente denominacional, circular (`dir` = +1 ou -1).
+fn next_lens(cur: Denomination, dir: isize) -> Denomination {
+    let all = Denomination::all();
+    let n = all.len() as isize;
+    let i = all.iter().position(|d| *d == cur).unwrap_or(0) as isize;
+    all[(((i + dir) % n + n) % n) as usize]
+}
+
 /// Modo do modal de configuração de IA.
 #[derive(Debug, Clone)]
 pub enum SettingsMode {
@@ -226,8 +368,9 @@ fn run_session_query(
     lang: Lang,
     context: &str,
     turns: &[ChatMessage],
+    study: Option<(StudyMode, Denomination)>,
 ) -> Result<String, String> {
-    ai::ask_session(provider, lang, context, turns).map_err(|e| e.to_string())
+    ai::ask_session(provider, lang, context, turns, study).map_err(|e| e.to_string())
 }
 
 /// Metadados de uma versão disponível.
@@ -283,8 +426,20 @@ pub struct App {
     pub sessions: Option<SessionBrowser>,
     /// Seletor de modo de estudo padrão, se aberto.
     pub mode_picker: Option<ModePicker>,
+    /// Painel de dados acadêmicos (instalação), se aberto.
+    pub scholarly: Option<ScholarlyPanel>,
+    /// Canal de progresso da instalação dos dados acadêmicos em andamento.
+    scholarly_rx: Option<Receiver<ScholarlyMsg>>,
+    /// Canal do assistente de estudo (rodada de refinamento ou estudo final).
+    study_rx: Option<Receiver<StudyMsg>>,
+    /// Caminho do banco (para reabrir numa thread de instalação). `None` = padrão.
+    db_path: Option<PathBuf>,
     /// Retângulo interno da área de leitura no último frame (origem da seleção).
     pub reader_inner: Option<Rect>,
+    /// Alvos clicáveis do último frame `(retângulo, alvo)`, do fundo ao topo
+    /// (overlays empilham por último). Remontado a cada `draw`; ver
+    /// [`App::hit_test`].
+    pub click_targets: Vec<(Rect, ClickTarget)>,
     /// Seleção de texto via mouse em curso/fixada, se houver.
     pub selection: Option<Selection>,
     /// Texto da seleção atual, remontado a cada `draw` a partir do buffer visível.
@@ -301,8 +456,14 @@ pub struct App {
 }
 
 impl App {
-    /// Cria a app abrindo a versão dada e carregando Gênesis 1.
-    pub fn new(store: Store, initial_version: TranslationId) -> Result<Self> {
+    /// Cria a app abrindo a versão dada e carregando Gênesis 1. `db_path` é o
+    /// caminho do banco (`None` = padrão), usado para reabrir numa thread de
+    /// instalação dos dados acadêmicos.
+    pub fn new(
+        store: Store,
+        initial_version: TranslationId,
+        db_path: Option<PathBuf>,
+    ) -> Result<Self> {
         let versions: Vec<VersionMeta> = {
             let src = EmbeddedSource::new(&store);
             src.translations()?
@@ -346,7 +507,12 @@ impl App {
             settings: None,
             sessions: None,
             mode_picker: None,
+            scholarly: None,
+            scholarly_rx: None,
+            study_rx: None,
+            db_path,
             reader_inner: None,
+            click_targets: Vec::new(),
             selection: None,
             selection_text: String::new(),
             copy_requested: false,
@@ -706,6 +872,8 @@ impl App {
         // Snapshot do que cruza a thread (o `Store`/`Session` não cruzam).
         let lang = panel.session.lang;
         let context = panel.session.context.clone();
+        // Follow-up de um estudo concluído → preserva modo/lente no system prompt.
+        let study = panel.study_done.as_ref().map(|c| (c.mode, c.lens));
         let turns: Vec<ChatMessage> = panel
             .session
             .messages
@@ -719,7 +887,7 @@ impl App {
         // mock roda inline (instantâneo, offline): demo e testes.
         if name == "mock" {
             let outcome = match build_provider(&name, None, None) {
-                Ok(p) => run_session_query(p.as_ref(), lang, &context, &turns),
+                Ok(p) => run_session_query(p.as_ref(), lang, &context, &turns, study),
                 Err(e) => Err(e.to_string()),
             };
             self.apply_answer(outcome);
@@ -728,7 +896,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let outcome = match build_provider(&name, key, None) {
-                Ok(p) => run_session_query(p.as_ref(), lang, &context, &turns),
+                Ok(p) => run_session_query(p.as_ref(), lang, &context, &turns, study),
                 Err(e) => Err(e.to_string()),
             };
             let _ = tx.send(outcome);
@@ -778,9 +946,416 @@ impl App {
         }
     }
 
+    /// Resolve provedor + chave do config (compartilhado por ask/estudo).
+    fn resolve_provider(&self) -> std::result::Result<(String, Option<String>), String> {
+        let name = self.config.provider.trim().to_ascii_lowercase();
+        if name.is_empty() {
+            return Err(
+                "nenhum provedor de IA configurado — pressione c para configurar".to_string(),
+            );
+        }
+        let key = if name == "anthropic" || name == "openai" {
+            match KeyStore::open_default()
+                .ok()
+                .and_then(|ks| ks.get(&name).map(str::to_string))
+            {
+                Some(k) => Some(k),
+                None => {
+                    return Err(format!(
+                        "sem chave para `{name}` — pressione c para configurar"
+                    ))
+                }
+            }
+        } else {
+            None
+        };
+        Ok((name, key))
+    }
+
+    /// Inicia o assistente de estudo no modo **e** lente dados (Enter na tela de
+    /// preparo `m`). A lente escolhida vira o novo padrão lembrado.
+    pub fn start_study(&mut self, mode: StudyMode, lens: Denomination) {
+        self.mode_picker = None;
+        // Modos acadêmico/pregação exigem os dados léxicos instalados.
+        if mode.wants_lexical() && !scholarly::is_populated(self.store.conn()) {
+            self.open_scholarly();
+            self.toast = Some(format!(
+                "O modo {} precisa dos dados léxicos — instale aqui (Enter).",
+                mode.name_pt()
+            ));
+            self.toast_ticks = TOAST_TICKS;
+            return;
+        }
+        // O assistente gera as rodadas com a IA: exige provedor/chave já agora.
+        if let Err(e) = self.resolve_provider() {
+            self.toast = Some(e);
+            self.toast_ticks = TOAST_TICKS;
+            return;
+        }
+        // Lembra a lente escolhida como padrão (config) para o próximo estudo.
+        if self.config.study_lens != lens {
+            self.config.study_lens = lens;
+            let _ = self.config.save();
+        }
+        let lang = self.lang();
+        let mut session = Session::start(
+            Session::generate_id(),
+            String::new(),
+            String::new(),
+            String::new(),
+            lang,
+            String::new(),
+            String::new(),
+        );
+        session.study_mode = Some(mode);
+        session.study_lens = Some(lens.slug().to_string());
+        let mut panel = AiPanel::from_session(session);
+        panel.study = Some(StudyFlow {
+            mode,
+            lens,
+            brief: String::new(),
+            round: 0,
+            question: String::new(),
+            options: Vec::new(),
+            selected: 0,
+            prior: Vec::new(),
+        });
+        self.ai = Some(panel);
+        self.input = Some(Input {
+            kind: InputKind::StudyBrief,
+            buffer: String::new(),
+            error: None,
+        });
+    }
+
+    /// Envia o assunto (input `StudyBrief`) e dispara a 1ª rodada de refinamento.
+    fn submit_brief(&mut self) {
+        let brief = match self.input.as_ref() {
+            Some(i) if i.kind == InputKind::StudyBrief => i.buffer.trim().to_string(),
+            _ => return,
+        };
+        self.input = None;
+        if brief.is_empty() {
+            self.ai = None; // cancelou
+            return;
+        }
+        let (mode, lens) = {
+            let Some(panel) = self.ai.as_ref() else {
+                return;
+            };
+            let Some(flow) = panel.study.as_ref() else {
+                return;
+            };
+            (flow.mode, flow.lens)
+        };
+        if let Some(panel) = self.ai.as_mut() {
+            if let Some(flow) = panel.study.as_mut() {
+                flow.brief = brief.clone();
+                flow.round = 1;
+            }
+            panel.session.title = format!(
+                "{} · {} — {}",
+                mode.name_pt(),
+                lens.name_pt(),
+                session_title(&brief)
+            );
+            panel
+                .session
+                .push(ChatRole::User, format!("Estudar: {brief}"));
+            panel.scroll.jump_to_end();
+        }
+        self.spawn_refine(1);
+    }
+
+    /// Registra a resposta de uma rodada e avança (próxima rodada ou estudo).
+    fn answer_round(&mut self, answer: String) {
+        let answer = answer.trim().to_string();
+        if answer.is_empty() {
+            return;
+        }
+        let (round, question) = {
+            let Some(panel) = self.ai.as_ref() else {
+                return;
+            };
+            let Some(flow) = panel.study.as_ref() else {
+                return;
+            };
+            if flow.options.is_empty() {
+                return; // nenhuma rodada aguardando resposta
+            }
+            (flow.round, flow.question.clone())
+        };
+        if let Some(panel) = self.ai.as_mut() {
+            panel.session.push(ChatRole::User, answer.clone());
+            panel.scroll.jump_to_end();
+            if let Some(flow) = panel.study.as_mut() {
+                flow.prior.push((question, answer));
+                flow.options.clear();
+                if round < 3 {
+                    flow.round = round + 1;
+                }
+            }
+        }
+        if round < 3 {
+            self.spawn_refine(round + 1);
+        } else {
+            self.spawn_final_study();
+        }
+    }
+
+    /// Dispara a rodada de refinamento `round` numa thread.
+    fn spawn_refine(&mut self, round: u8) {
+        let (mode, brief, prior, lang) = {
+            let Some(panel) = self.ai.as_ref() else {
+                return;
+            };
+            let Some(flow) = panel.study.as_ref() else {
+                return;
+            };
+            (
+                flow.mode,
+                flow.brief.clone(),
+                flow.prior.clone(),
+                panel.session.lang,
+            )
+        };
+        let (name, key) = match self.resolve_provider() {
+            Ok(v) => v,
+            Err(e) => {
+                self.set_study_error(e);
+                return;
+            }
+        };
+        if let Some(panel) = self.ai.as_mut() {
+            panel.status = AiStatus::Pending;
+        }
+        self.spinner = 0;
+        let f = move |provider: &dyn LlmProvider| -> StudyMsg {
+            match ai::refine_scope(provider, mode, lang, &brief, &prior, round) {
+                Ok(r) => StudyMsg::Round {
+                    question: r.question,
+                    options: r.options,
+                },
+                Err(e) => StudyMsg::Error(e.to_string()),
+            }
+        };
+        self.spawn_study_worker(name, key, f);
+    }
+
+    /// Após a 3ª rodada: resolve o escopo (passagem vs temático) e estuda.
+    fn spawn_final_study(&mut self) {
+        let (mode, lens, brief, prior) = {
+            let Some(panel) = self.ai.as_ref() else {
+                return;
+            };
+            let Some(flow) = panel.study.as_ref() else {
+                return;
+            };
+            (flow.mode, flow.lens, flow.brief.clone(), flow.prior.clone())
+        };
+        let lang = self.lang();
+        // Escopo = assunto + respostas (para resolver a referência e focar).
+        let mut scope = brief.clone();
+        for (_, a) in &prior {
+            scope.push_str("; ");
+            scope.push_str(a);
+        }
+        // Resolve uma passagem concreta do acervo a partir do escopo; senão,
+        // estudo temático ancorado (informalmente) no capítulo aberto.
+        let resolved = scan_references(&scope)
+            .into_iter()
+            .map(|s| s.reference)
+            .find(|r| {
+                EmbeddedSource::new(&self.store)
+                    .passage(r, self.version())
+                    .is_ok()
+            });
+        let (reference, reference_label, grounded) = match resolved {
+            Some(r) => (r, format_reference(&r, lang), true),
+            None => (
+                Reference::whole_chapter(self.book_number(), self.chapter),
+                session_title(&brief),
+                false,
+            ),
+        };
+        let ctx = StudyContext {
+            mode,
+            lens,
+            depth: mode.implied_depth(),
+            reference,
+            reference_label,
+            grounded,
+            scope: scope.clone(),
+        };
+        self.run_study(ctx, scope);
+    }
+
+    /// Executa um estudo a partir de um [`StudyContext`] (compartilhado pelo
+    /// estudo inicial e pelo aprofundamento): refaz a fundamentação (passagem +
+    /// léxico + refs) quando há passagem, dispara o worker e retém o contexto.
+    fn run_study(&mut self, ctx: StudyContext, request_brief: String) {
+        let lang = self.lang();
+        let (passage, cross_references, verified_lexicon) = if ctx.grounded {
+            match EmbeddedSource::new(&self.store).passage(&ctx.reference, self.version()) {
+                Ok(p) => {
+                    let nums = p.verse_numbers();
+                    let xlimit = if ctx.mode.wants_lexical() { 16 } else { 8 };
+                    let xrefs = xref::passage_labels(
+                        self.store.conn(),
+                        &ctx.reference,
+                        &nums,
+                        lang,
+                        xlimit,
+                    );
+                    let vl = if ctx.mode.wants_lexical() {
+                        ai::verified_lexicon(self.store.conn(), &ctx.reference, &nums, lang, 16)
+                    } else {
+                        VerifiedLexicon::default()
+                    };
+                    (Some(p), xrefs, vl)
+                }
+                Err(_) => (None, Vec::new(), VerifiedLexicon::default()),
+            }
+        } else {
+            (None, Vec::new(), VerifiedLexicon::default())
+        };
+        let (name, key) = match self.resolve_provider() {
+            Ok(v) => v,
+            Err(e) => {
+                self.set_study_error(e);
+                return;
+            }
+        };
+        if let Some(panel) = self.ai.as_mut() {
+            panel.session.provider = name.clone();
+            panel.session.model = ai::providers::default_model(&name).to_string();
+            panel.status = AiStatus::Pending;
+        }
+        self.spinner = 0;
+        let f = move |provider: &dyn LlmProvider| -> StudyMsg {
+            let req = StudyRequest {
+                reference: ctx.reference,
+                reference_label: ctx.reference_label.clone(),
+                mode: ctx.mode,
+                lens: ctx.lens,
+                depth: ctx.depth,
+                language: lang,
+                passage: passage.as_ref(),
+                cross_references,
+                verified_lexicon,
+                web_sources: Vec::new(),
+                brief: Some(request_brief),
+            };
+            match ai::study(provider, &req) {
+                Ok(result) => StudyMsg::Done {
+                    markdown: result.to_markdown(),
+                    ctx: Box::new(ctx),
+                },
+                Err(e) => StudyMsg::Error(e.to_string()),
+            }
+        };
+        self.spawn_study_worker(name, key, f);
+    }
+
+    /// Roda `f` (refinar ou estudar) inline (mock) ou numa thread; o resultado
+    /// vai para `study_rx` (drenado por [`App::poll_study`]).
+    fn spawn_study_worker<F>(&mut self, name: String, key: Option<String>, f: F)
+    where
+        F: FnOnce(&dyn LlmProvider) -> StudyMsg + Send + 'static,
+    {
+        if name == "mock" {
+            let msg = match build_provider(&name, None, None) {
+                Ok(p) => f(p.as_ref()),
+                Err(e) => StudyMsg::Error(e.to_string()),
+            };
+            self.apply_study_msg(msg);
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let msg = match build_provider(&name, key, None) {
+                Ok(p) => f(p.as_ref()),
+                Err(e) => StudyMsg::Error(e.to_string()),
+            };
+            let _ = tx.send(msg);
+        });
+        self.study_rx = Some(rx);
+    }
+
+    /// Aplica uma mensagem do estudo (rodada, conclusão ou erro).
+    fn apply_study_msg(&mut self, msg: StudyMsg) {
+        let Some(panel) = self.ai.as_mut() else {
+            return;
+        };
+        match msg {
+            StudyMsg::Round { question, options } => {
+                panel.session.push(ChatRole::Assistant, question.clone());
+                if let Some(flow) = panel.study.as_mut() {
+                    flow.question = question;
+                    flow.options = options;
+                    flow.selected = 0;
+                }
+                panel.status = AiStatus::Idle;
+                panel.scroll.jump_to_end();
+            }
+            StudyMsg::Done { markdown, ctx } => {
+                panel.session.push(ChatRole::Assistant, markdown);
+                panel.status = AiStatus::Idle;
+                panel.study = None; // assistente concluído; vira estudo/sessão normal
+                                    // Semente de contexto p/ follow-ups na mesma lente/fundamentação.
+                if panel.session.context.trim().is_empty() {
+                    panel.session.context = format!(
+                        "Estudo {} sob a lente {}. Escopo: {} — {}.",
+                        ctx.mode.name_pt(),
+                        ctx.lens.name_pt(),
+                        ctx.reference_label,
+                        ctx.scope
+                    );
+                }
+                panel.study_done = Some(*ctx); // retém p/ aprofundar (+) e follow-up (a)
+                panel.refresh_refs();
+                panel.scroll.jump_to_end();
+                if let Ok(store) = SessionStore::open_default() {
+                    let _ = store.put(&panel.session);
+                }
+            }
+            StudyMsg::Error(e) => panel.status = AiStatus::Error(e),
+        }
+    }
+
+    /// Define um erro no painel de estudo (sem provedor, etc.).
+    fn set_study_error(&mut self, e: String) {
+        if let Some(panel) = self.ai.as_mut() {
+            panel.status = AiStatus::Error(e);
+        }
+    }
+
+    /// Drena o canal do assistente de estudo (a cada iteração do loop).
+    pub fn poll_study(&mut self) {
+        let Some(rx) = self.study_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(msg) => {
+                self.study_rx = None;
+                self.apply_study_msg(msg);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.study_rx = None;
+                self.apply_study_msg(StudyMsg::Error("estudo interrompido".to_string()));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
     /// Avança o indicador de "consultando…" (chamado nos ticks ociosos do loop).
     pub fn tick(&mut self) {
-        if matches!(self.ai.as_ref().map(|p| &p.status), Some(AiStatus::Pending)) {
+        let ai_pending = matches!(self.ai.as_ref().map(|p| &p.status), Some(AiStatus::Pending));
+        let installing = matches!(
+            self.scholarly.as_ref().map(|p| &p.state),
+            Some(ScholarlyState::Installing(_))
+        );
+        if ai_pending || installing {
             self.spinner = self.spinner.wrapping_add(1);
         }
         // Esvanece o toast de status após alguns ticks ociosos.
@@ -799,6 +1374,7 @@ impl App {
             || self.settings.is_some()
             || self.sessions.is_some()
             || self.mode_picker.is_some()
+            || self.scholarly.is_some()
     }
 
     /// Limpa a seleção de texto do mouse e o texto copiável associado.
@@ -828,22 +1404,20 @@ impl App {
     /// arrasto é grampeado ao retângulo. A cópia é diferida (ver
     /// [`App::take_copy_request`]); a roda rola pelos versículos.
     pub fn handle_mouse(&mut self, m: MouseEvent) {
-        // Na conversa com a IA, a roda rola o overlay (clamp no `draw`); os
-        // demais eventos de mouse são ignorados sob o overlay.
-        if let Some(panel) = self.ai.as_mut() {
-            match m.kind {
-                MouseEventKind::ScrollDown => panel.scroll.down(MOUSE_SCROLL as u16),
-                MouseEventKind::ScrollUp => panel.scroll.up(MOUSE_SCROLL as u16),
-                _ => {}
-            }
-            return;
-        }
-        // Demais overlays capturam tudo — não há seleção "por baixo" deles.
+        // Overlays modais: clique nas linhas/opções/botões e a roda rola o foco.
         if self.overlay_open() {
+            self.handle_overlay_mouse(m);
             return;
         }
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Clique numa linha de livro (lista à esquerda) seleciona o livro.
+                if let Some(ClickTarget::Book(i)) = self.hit_test(m.column, m.row) {
+                    self.clear_selection();
+                    self.select_book(i);
+                    self.focus = Focus::Books;
+                    return;
+                }
                 self.selection = match self.reader_inner {
                     // Só inicia se o clique nasceu DENTRO da área de versículos.
                     Some(inner) if rect_contains(inner, m.column, m.row) => {
@@ -877,25 +1451,140 @@ impl App {
                 if let Some(inner) = inner {
                     sel.cursor = clamp_to_rect(inner, m.column, m.row);
                 }
-                // Clique simples (sem arrastar): apenas desfaz a seleção.
+                // Clique simples (sem arrastar): move o cursor para o versículo
+                // clicado, se houver; senão apenas desfaz a seleção.
                 if sel.anchor == sel.cursor {
+                    let at = sel.anchor;
                     self.clear_selection();
+                    if let Some(ClickTarget::Verse(i)) = self.hit_test(at.0, at.1) {
+                        if i < self.verses.len() {
+                            self.selected = i;
+                            self.focus = Focus::Reader;
+                        }
+                    }
                     return;
                 }
                 // Pede a cópia: o próximo `draw` remonta `selection_text` (com a
                 // citação) a partir do buffer e o runtime copia em seguida.
                 self.copy_requested = true;
             }
-            // A roda rola pelos versículos (sem rolagem nativa sob captura).
-            MouseEventKind::ScrollDown => {
-                self.clear_selection();
-                self.move_cursor(MOUSE_SCROLL);
-            }
-            MouseEventKind::ScrollUp => {
-                self.clear_selection();
-                self.move_cursor(-MOUSE_SCROLL);
-            }
+            // A roda do mouse é ignorada na app (use ↑↓/PgUp/PgDn): evita a
+            // enxurrada de eventos que travava o loop sob a captura de mouse.
             _ => {}
+        }
+    }
+
+    /// Registra um alvo clicável do frame atual (chamado pela renderização).
+    pub fn push_click(&mut self, rect: Rect, target: ClickTarget) {
+        self.click_targets.push((rect, target));
+    }
+
+    /// Alvo clicável mais ao topo que contém `(col, row)`, se houver. Os overlays
+    /// empilham por último, então a busca é de trás para frente.
+    fn hit_test(&self, col: u16, row: u16) -> Option<ClickTarget> {
+        self.click_targets
+            .iter()
+            .rev()
+            .find(|(r, _)| rect_contains(*r, col, row))
+            .map(|(_, t)| *t)
+    }
+
+    /// Mouse sob um overlay modal: clica linhas/opções/botões. A roda é ignorada
+    /// (rolagem por teclado), pois a captura de mouse a torna uma enxurrada.
+    fn handle_overlay_mouse(&mut self, m: MouseEvent) {
+        if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+            // Só alvos de overlay (ignora livros/versículos por baixo do modal).
+            let target = self
+                .click_targets
+                .iter()
+                .rev()
+                .find(|(r, t)| t.is_overlay() && rect_contains(*r, m.column, m.row))
+                .map(|(_, t)| *t);
+            if let Some(target) = target {
+                self.activate_click(target);
+            }
+        }
+    }
+
+    /// Aplica o efeito de um clique num alvo. Para listas, o 1º clique seleciona a
+    /// linha e o clique na linha já selecionada a ativa (abre/inicia/define).
+    fn activate_click(&mut self, target: ClickTarget) {
+        match target {
+            ClickTarget::Book(i) => {
+                self.clear_selection();
+                self.select_book(i);
+                self.focus = Focus::Books;
+            }
+            ClickTarget::Verse(i) => {
+                if i < self.verses.len() {
+                    self.selected = i;
+                    self.focus = Focus::Reader;
+                }
+            }
+            ClickTarget::ModeRow(i) => {
+                let act = matches!(self.mode_picker.as_ref(), Some(p) if p.selected == i);
+                let lens = self.mode_picker.as_ref().map(|p| p.lens);
+                if let Some(p) = self.mode_picker.as_mut() {
+                    p.selected = i;
+                }
+                if act {
+                    if let (Some(mode), Some(lens)) = (StudyMode::all().get(i).copied(), lens) {
+                        self.start_study(mode, lens);
+                    }
+                }
+            }
+            ClickTarget::LensCycle => {
+                if let Some(p) = self.mode_picker.as_mut() {
+                    p.lens = next_lens(p.lens, 1);
+                }
+            }
+            ClickTarget::SessionRow(i) => {
+                let act = matches!(self.sessions.as_ref(), Some(b) if b.selected == i);
+                if let Some(b) = self.sessions.as_mut() {
+                    if i < b.items.len() {
+                        b.selected = i;
+                    }
+                }
+                if act {
+                    let s = self.sessions.as_ref().and_then(|b| b.items.get(i).cloned());
+                    if let Some(s) = s {
+                        self.sessions = None;
+                        self.ai = Some(AiPanel::from_session(s));
+                    }
+                }
+            }
+            ClickTarget::SettingsRow(i) => {
+                let act = matches!(self.settings.as_ref(), Some(s) if s.selected == i);
+                if let Some(s) = self.settings.as_mut() {
+                    if i < PROVIDERS.len() {
+                        s.selected = i;
+                    }
+                }
+                if act && i < PROVIDERS.len() {
+                    self.config.provider = PROVIDERS[i].to_string();
+                    let _ = self.config.save();
+                }
+            }
+            ClickTarget::StudyOption(i) => {
+                let text = self
+                    .ai
+                    .as_ref()
+                    .and_then(|p| p.study.as_ref())
+                    .and_then(|f| f.options.get(i))
+                    .cloned();
+                if let Some(t) = text {
+                    self.answer_round(t);
+                }
+            }
+            ClickTarget::ScholarlyInstall => {
+                let can = matches!(
+                    self.scholarly.as_ref().map(|p| &p.state),
+                    Some(ScholarlyState::Absent) | Some(ScholarlyState::Error(_))
+                );
+                if can {
+                    self.start_scholarly_install();
+                }
+            }
         }
     }
 
@@ -921,38 +1610,222 @@ impl App {
         // Ações diferidas (resolvidas sob o empréstimo do painel, aplicadas depois).
         let mut jump: Option<Reference> = None;
         let mut followup = false;
+        let mut pick: Option<usize> = None;
+        let mut custom = false;
+        let mut export = false;
+        let mut cycle_lens = false;
+        let mut deepen = false;
         if let Some(panel) = self.ai.as_mut() {
             let n = panel.refs.len();
             let busy = matches!(panel.status, AiStatus::Pending);
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.ai = None;
-                    return;
+            // Refinando o escopo: há opções a escolher → teclas mudam de papel.
+            let refining = panel
+                .study
+                .as_ref()
+                .map(|f| f.options.len())
+                .filter(|c| *c > 0);
+            if let Some(count) = refining {
+                let flow = panel.study.as_mut().unwrap();
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.ai = None;
+                        return;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if flow.selected + 1 < count {
+                            flow.selected += 1;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        flow.selected = flow.selected.saturating_sub(1);
+                    }
+                    // Enter escolhe a opção destacada; dígitos escolhem direto.
+                    KeyCode::Enter => pick = Some(flow.selected),
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let i = (c as u8 - b'1') as usize;
+                        if i < count {
+                            pick = Some(i);
+                        }
+                    }
+                    // `c`/`o`: digitar a própria resposta (custom).
+                    KeyCode::Char('c') | KeyCode::Char('o') => custom = true,
+                    _ => {}
                 }
-                // `a` continua a conversa (abre o campo de pergunta), exceto se ocupado.
-                KeyCode::Char('a') if !busy => followup = true,
-                KeyCode::Down | KeyCode::Char('j') => panel.scroll.down(1),
-                KeyCode::Up | KeyCode::Char('k') => panel.scroll.up(1),
-                KeyCode::PageDown | KeyCode::Char(' ') => panel.scroll.down(10),
-                KeyCode::PageUp => panel.scroll.up(10),
-                // Seleciona entre as referências citadas.
-                KeyCode::Tab if n > 0 => panel.ref_selected = (panel.ref_selected + 1) % n,
-                KeyCode::BackTab if n > 0 => panel.ref_selected = (panel.ref_selected + n - 1) % n,
-                // Enter salta para a referência selecionada.
-                KeyCode::Enter => jump = panel.refs.get(panel.ref_selected).copied(),
-                // Dígitos 1–9: salto direto para a n-ésima referência citada.
-                KeyCode::Char(c @ '1'..='9') => {
-                    jump = panel.refs.get((c as u8 - b'1') as usize).copied();
+            } else {
+                // Sessão de estudo concluída → habilita exportar/lente/aprofundar.
+                let has_study = panel.session.study_mode.is_some() && panel.study.is_none();
+                let can_deepen = panel.study_done.is_some();
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.ai = None;
+                        return;
+                    }
+                    // `a` continua a conversa (abre o campo de pergunta), exceto se ocupado.
+                    KeyCode::Char('a') if !busy => followup = true,
+                    // `+` aprofunda o estudo (re-roda mais detalhado), exceto se ocupado.
+                    KeyCode::Char('+') if can_deepen && !busy => deepen = true,
+                    // `e` exporta o estudo (.md); `L` cicla a lente denominacional.
+                    KeyCode::Char('e') if has_study && !busy => export = true,
+                    KeyCode::Char('L') if has_study && !busy => cycle_lens = true,
+                    KeyCode::Down | KeyCode::Char('j') => panel.scroll.down(1),
+                    KeyCode::Up | KeyCode::Char('k') => panel.scroll.up(1),
+                    KeyCode::PageDown | KeyCode::Char(' ') => panel.scroll.down(10),
+                    KeyCode::PageUp => panel.scroll.up(10),
+                    // Seleciona entre as referências citadas.
+                    KeyCode::Tab if n > 0 => panel.ref_selected = (panel.ref_selected + 1) % n,
+                    KeyCode::BackTab if n > 0 => {
+                        panel.ref_selected = (panel.ref_selected + n - 1) % n
+                    }
+                    // Enter salta para a referência selecionada.
+                    KeyCode::Enter => jump = panel.refs.get(panel.ref_selected).copied(),
+                    // Dígitos 1–9: salto direto para a n-ésima referência citada.
+                    KeyCode::Char(c @ '1'..='9') => {
+                        jump = panel.refs.get((c as u8 - b'1') as usize).copied();
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
-        if followup {
+        if let Some(i) = pick {
+            let text = self
+                .ai
+                .as_ref()
+                .and_then(|p| p.study.as_ref())
+                .and_then(|f| f.options.get(i))
+                .cloned();
+            if let Some(t) = text {
+                self.answer_round(t);
+            }
+        } else if custom {
+            self.input = Some(Input {
+                kind: InputKind::StudyCustom,
+                buffer: String::new(),
+                error: None,
+            });
+        } else if export {
+            self.export_study();
+        } else if cycle_lens {
+            self.cycle_lens();
+        } else if deepen {
+            self.open_deepen(); // abre o input do foco do aprofundamento
+        } else if followup {
             self.open_ask(); // abre o input; a precedência leva a digitação para lá
         } else if let Some(reference) = jump {
             self.ai = None;
             self.go_to(&reference);
         }
+    }
+
+    /// Exporta o estudo atual (última resposta do assistente) para
+    /// `studies/<slug>.md`. Apenas Markdown — sem pandoc (não trava a UI).
+    fn export_study(&mut self) {
+        let Some(panel) = self.ai.as_ref() else {
+            return;
+        };
+        let md = panel
+            .session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::Assistant)
+            .map(|m| m.content.clone());
+        let Some(md) = md else {
+            return;
+        };
+        let title = if panel.session.title.trim().is_empty() {
+            "estudo".to_string()
+        } else {
+            panel.session.title.clone()
+        };
+        let result = (|| -> std::result::Result<PathBuf, String> {
+            let dir = the_light_core::userdata::studies_dir()
+                .map_err(|e| format!("sem diretório de estudos: {e}"))?;
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("erro ao criar {}: {e}", dir.display()))?;
+            let slug = the_light_core::export::slugify(&title);
+            let slug = if slug.is_empty() {
+                "estudo".to_string()
+            } else {
+                slug
+            };
+            let path = dir.join(format!("{slug}.md"));
+            the_light_core::export::export_document(&md, &path)?;
+            Ok(path)
+        })();
+        let (msg, ticks) = match result {
+            Ok(path) => (
+                format!("✓ Estudo exportado: {}", path.display()),
+                TOAST_TICKS,
+            ),
+            Err(e) => (format!("Erro ao exportar: {e}"), TOAST_TICKS),
+        };
+        self.toast = Some(msg);
+        self.toast_ticks = ticks;
+    }
+
+    /// Cicla a lente denominacional padrão (config). Estudos já concluídos não
+    /// mudam — re-rodar/aprofundar usa a nova lente.
+    fn cycle_lens(&mut self) {
+        let next = next_lens(self.config.study_lens, 1);
+        self.config.study_lens = next;
+        let _ = self.config.save();
+        if let Some(flow) = self.ai.as_mut().and_then(|p| p.study.as_mut()) {
+            flow.lens = next;
+        }
+        if let Some(ctx) = self.ai.as_mut().and_then(|p| p.study_done.as_mut()) {
+            ctx.lens = next;
+        }
+        self.toast = Some(format!("Lente: {}", next.name_pt()));
+        self.toast_ticks = TOAST_TICKS;
+    }
+
+    /// Abre o campo de **foco do aprofundamento** (`+`) de um estudo concluído.
+    fn open_deepen(&mut self) {
+        if self
+            .ai
+            .as_ref()
+            .and_then(|p| p.study_done.as_ref())
+            .is_none()
+        {
+            return;
+        }
+        self.input = Some(Input {
+            kind: InputKind::StudyDeepen,
+            buffer: String::new(),
+            error: None,
+        });
+    }
+
+    /// Aprofunda o estudo concluído: re-roda **um nível mais fundo** (mesma
+    /// passagem/lente), com o foco dado (ou o escopo anterior), e anexa o
+    /// resultado como uma nova seção na mesma sessão.
+    fn spawn_deepen(&mut self, focus: String) {
+        let Some(prev) = self.ai.as_ref().and_then(|p| p.study_done.clone()) else {
+            return;
+        };
+        let focus = focus.trim().to_string();
+        // Brief do pedido = foco do usuário, ou o escopo anterior ("aprofundar").
+        let request_brief = if focus.is_empty() {
+            format!("Aprofundar: {}", prev.scope)
+        } else {
+            focus.clone()
+        };
+        // Registra o pedido como turno do usuário (visível no histórico).
+        if let Some(panel) = self.ai.as_mut() {
+            let label = if focus.is_empty() {
+                "Aprofundar o estudo".to_string()
+            } else {
+                format!("Aprofundar: {focus}")
+            };
+            panel.session.push(ChatRole::User, label);
+            panel.scroll.jump_to_end();
+        }
+        // Mesmo contexto, um nível mais profundo (satura em WordStudy).
+        let ctx = StudyContext {
+            depth: prev.depth.deeper(),
+            ..prev
+        };
+        self.run_study(ctx, request_brief);
     }
 
     /// Abre o navegador de conversas salvas (tecla `s`).
@@ -1005,18 +1878,22 @@ impl App {
         }
     }
 
-    /// Abre o seletor de modo de estudo padrão (tecla `m`).
+    /// Abre a tela de preparo do estudo (tecla `m`): modo + lente.
     pub fn open_mode_picker(&mut self) {
         let selected = StudyMode::all()
             .iter()
             .position(|m| *m == self.config.study_mode)
             .unwrap_or(0);
-        self.mode_picker = Some(ModePicker { selected });
+        self.mode_picker = Some(ModePicker {
+            selected,
+            lens: self.config.study_lens,
+        });
     }
 
     fn handle_mode_picker_key(&mut self, key: KeyEvent) {
         let modes = StudyMode::all();
-        let mut commit: Option<StudyMode> = None;
+        let mut start: Option<(StudyMode, Denomination)> = None;
+        let mut set_default: Option<(StudyMode, Denomination)> = None;
         if let Some(picker) = self.mode_picker.as_mut() {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('m') => {
@@ -1031,17 +1908,158 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => {
                     picker.selected = picker.selected.saturating_sub(1);
                 }
-                KeyCode::Enter => commit = modes.get(picker.selected).copied(),
+                // ←/→ (ou `l`) ciclam a lente denominacional.
+                KeyCode::Right | KeyCode::Char('l') => picker.lens = next_lens(picker.lens, 1),
+                KeyCode::Left | KeyCode::Char('h') => picker.lens = next_lens(picker.lens, -1),
+                // Enter inicia o estudo com o modo + a lente escolhidos.
+                KeyCode::Enter => {
+                    start = modes.get(picker.selected).map(|&m| (m, picker.lens));
+                }
+                // `s` define modo + lente como padrão (sem iniciar o estudo).
+                KeyCode::Char('s') => {
+                    set_default = modes.get(picker.selected).map(|&m| (m, picker.lens));
+                }
                 _ => {}
             }
         }
-        if let Some(mode) = commit {
-            // Persiste como padrão (mesmo padrão de `Act::SetActive` das chaves).
+        if let Some((mode, lens)) = start {
+            self.start_study(mode, lens);
+        } else if let Some((mode, lens)) = set_default {
+            // Persiste modo + lente como padrão.
             self.config.study_mode = mode;
+            self.config.study_lens = lens;
             let _ = self.config.save();
             self.mode_picker = None;
-            self.toast = Some(format!("Modo de estudo: {}", mode.name_pt()));
+            self.toast = Some(format!("Padrão: {} · {}", mode.name_pt(), lens.name_pt()));
             self.toast_ticks = TOAST_TICKS;
+        }
+    }
+
+    /// Abre o painel de dados acadêmicos (tecla `d`), consultando o estado atual.
+    pub fn open_scholarly(&mut self) {
+        let state = self.scholarly_state();
+        self.scholarly = Some(ScholarlyPanel { state });
+    }
+
+    /// Estado de instalação atual a partir do banco aberto.
+    fn scholarly_state(&self) -> ScholarlyState {
+        let conn = self.store.conn();
+        if scholarly::is_populated(conn) {
+            let tokens = conn
+                .query_row("SELECT count(*) FROM original_tokens", [], |r| r.get(0))
+                .unwrap_or(0);
+            let lexicon = conn
+                .query_row("SELECT count(*) FROM lexicon", [], |r| r.get(0))
+                .unwrap_or(0);
+            ScholarlyState::Installed { tokens, lexicon }
+        } else {
+            ScholarlyState::Absent
+        }
+    }
+
+    fn handle_scholarly_key(&mut self, key: KeyEvent) {
+        let (installing, installed) = match self.scholarly.as_ref().map(|p| &p.state) {
+            Some(ScholarlyState::Installing(_)) => (true, false),
+            Some(ScholarlyState::Installed { .. }) => (false, true),
+            _ => (false, false),
+        };
+        // Travado durante a instalação: ignora teclas (a thread segue no fundo).
+        if installing {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('d') => self.scholarly = None,
+            KeyCode::Enter | KeyCode::Char('i') if !installed => self.start_scholarly_install(),
+            _ => {}
+        }
+    }
+
+    /// Dispara a instalação dos dados acadêmicos numa thread de fundo (baixa +
+    /// importa), reportando progresso por canal — mesma forma da consulta de IA.
+    fn start_scholarly_install(&mut self) {
+        let db_path = self.db_path.clone();
+        let seed_dir = the_light_core::userdata::data_dir()
+            .map(|d| d.join("seed").join("scholarly"))
+            .unwrap_or_else(|_| PathBuf::from("data/seed/scholarly"));
+        let datasets = scholarly::default_datasets();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let progress_tx = tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> std::result::Result<Vec<(String, usize)>, String> {
+                let mut store = match &db_path {
+                    Some(p) => Store::open(p),
+                    None => Store::open_default(),
+                }
+                .map_err(|e| e.to_string())?;
+                let mut cb = |msg: &str| {
+                    let _ = progress_tx.send(ScholarlyMsg::Progress(msg.to_string()));
+                };
+                scholarly::import(
+                    store.conn_mut(),
+                    &datasets,
+                    &seed_dir,
+                    false,
+                    false,
+                    &mut cb,
+                )
+                .map_err(|e| e.to_string())
+            })();
+            let _ = tx.send(match result {
+                Ok(s) => ScholarlyMsg::Done(s),
+                Err(e) => ScholarlyMsg::Error(e),
+            });
+        });
+        self.scholarly_rx = Some(rx);
+        self.scholarly = Some(ScholarlyPanel {
+            state: ScholarlyState::Installing("Iniciando…".to_string()),
+        });
+        self.spinner = 0;
+    }
+
+    /// Drena o canal da instalação dos dados acadêmicos (a cada iteração do loop).
+    pub fn poll_scholarly(&mut self) {
+        if self.scholarly_rx.is_none() {
+            return;
+        }
+        loop {
+            let msg = match self.scholarly_rx.as_ref().unwrap().try_recv() {
+                Ok(m) => m,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.scholarly_rx = None;
+                    if let Some(p) = self.scholarly.as_mut() {
+                        p.state = ScholarlyState::Error("instalação interrompida".to_string());
+                    }
+                    break;
+                }
+            };
+            match msg {
+                ScholarlyMsg::Progress(m) => {
+                    if let Some(p) = self.scholarly.as_mut() {
+                        p.state = ScholarlyState::Installing(m);
+                    }
+                }
+                ScholarlyMsg::Done(summary) => {
+                    self.scholarly_rx = None;
+                    let total: usize = summary.iter().map(|(_, n)| n).sum();
+                    // Reabre o estado a partir do banco (a thread já comitou).
+                    let state = self.scholarly_state();
+                    if let Some(p) = self.scholarly.as_mut() {
+                        p.state = state;
+                    }
+                    self.toast = Some(format!("✓ Dados acadêmicos instalados ({total} registros)"));
+                    self.toast_ticks = TOAST_TICKS;
+                    break;
+                }
+                ScholarlyMsg::Error(e) => {
+                    self.scholarly_rx = None;
+                    if let Some(p) = self.scholarly.as_mut() {
+                        p.state = ScholarlyState::Error(e);
+                    }
+                    break;
+                }
+            }
         }
     }
 
@@ -1149,6 +2167,10 @@ impl App {
             self.handle_mode_picker_key(key);
             return;
         }
+        if self.scholarly.is_some() {
+            self.handle_scholarly_key(key);
+            return;
+        }
         if self.input.is_some() {
             self.handle_input_key(key);
             return;
@@ -1187,6 +2209,7 @@ impl App {
             KeyCode::Char('c') => self.open_settings(),
             KeyCode::Char('s') => self.open_sessions(),
             KeyCode::Char('m') => self.open_mode_picker(),
+            KeyCode::Char('d') => self.open_scholarly(),
             KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('g') => {
                 self.input = Some(Input {
@@ -1235,10 +2258,16 @@ impl App {
             return;
         };
         let is_search = input.kind == InputKind::Search;
+        let kind = input.kind;
         match key.code {
             KeyCode::Esc => {
                 self.input = None;
                 self.search_results.clear();
+                // Esc no assunto do estudo abandona o assistente inteiro;
+                // numa resposta própria, volta às opções (mantém o painel).
+                if kind == InputKind::StudyBrief {
+                    self.ai = None;
+                }
             }
             KeyCode::Backspace => {
                 input.buffer.pop();
@@ -1293,6 +2322,17 @@ impl App {
                 }
             }
             InputKind::Ask => self.submit_ask(),
+            InputKind::StudyBrief => self.submit_brief(),
+            InputKind::StudyCustom => {
+                let answer = input.buffer.clone();
+                self.input = None;
+                self.answer_round(answer);
+            }
+            InputKind::StudyDeepen => {
+                let focus = input.buffer.clone();
+                self.input = None;
+                self.spawn_deepen(focus);
+            }
         }
     }
 
@@ -1334,6 +2374,44 @@ mod tests {
         for c in s.chars() {
             app.handle_key(key(KeyCode::Char(c)));
         }
+    }
+
+    #[test]
+    fn scholarly_panel_opens_reflects_state_and_closes() {
+        let mut app = seeded_app(); // banco em memória, sem dados acadêmicos
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(
+            matches!(
+                app.scholarly.as_ref().map(|p| &p.state),
+                Some(ScholarlyState::Absent)
+            ),
+            "base DB → Absent"
+        );
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.scholarly.is_none());
+
+        // Com tokens no banco, o painel reflete "instalado".
+        app.store
+            .conn()
+            .execute(
+                "INSERT INTO scholarly_sources(id,name,license,embeddable,attribution,url,version) \
+                 VALUES ('tahot','t','cc-by',1,'a','u','v')",
+                [],
+            )
+            .unwrap();
+        app.store
+            .conn()
+            .execute(
+                "INSERT INTO original_tokens(testament,book_number,chapter,verse,word_index,\
+                 surface,strongs,source_id) VALUES ('OT',1,1,1,0,'x','H7225','tahot')",
+                [],
+            )
+            .unwrap();
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(matches!(
+            app.scholarly.as_ref().map(|p| &p.state),
+            Some(ScholarlyState::Installed { tokens: 1, .. })
+        ));
     }
 
     #[test]
@@ -1392,7 +2470,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mut app = App::new(store, "kjv".into()).unwrap();
+        let mut app = App::new(store, "kjv".into(), None).unwrap();
         app.go_to(&parse_reference("Rm 3.23").unwrap());
         app
     }
@@ -1719,33 +2797,32 @@ mod tests {
     }
 
     #[test]
-    fn scroll_moves_verse_cursor_and_clears_selection() {
+    fn wheel_is_a_noop_in_reader() {
+        // A roda do mouse é ignorada na app (rolagem por teclado): não mexe no
+        // cursor nem cancela uma seleção em curso.
         let mut app = app_with_reader();
         app.selected = 0;
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 6));
         assert!(app.selection.is_some());
         app.handle_mouse(mouse(MouseEventKind::ScrollDown, 12, 6));
-        assert!(app.selection.is_none(), "rolar cancela a seleção");
-        // seeded_app tem 2 versículos (índices 0..=1): rola e grampeia no fim.
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.selected, 0, "a roda não move o cursor");
+        assert!(app.selection.is_some(), "a roda não cancela a seleção");
         app.handle_mouse(mouse(MouseEventKind::ScrollUp, 12, 6));
         assert_eq!(app.selected, 0);
     }
 
     #[test]
-    fn wheel_scrolls_ai_panel_not_the_reader() {
+    fn wheel_is_a_noop_under_overlay() {
         let mut app = app_with_reader();
         app.selected = 0;
         app.ai = Some(panel_with_answer("resposta"));
         app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 5));
         assert_eq!(
             app.ai.as_ref().unwrap().scroll.offset(),
-            MOUSE_SCROLL as u16
+            0,
+            "a roda não rola o overlay (use ↑↓)"
         );
-        // Sob o overlay, a roda NÃO mexe no cursor de versículo do leitor.
         assert_eq!(app.selected, 0);
-        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 5));
-        assert_eq!(app.ai.as_ref().unwrap().scroll.offset(), 0);
     }
 
     #[test]
@@ -1823,7 +2900,7 @@ mod tests {
             role: ChatRole::User,
             content: "oi".into(),
         }];
-        let out = run_session_query(&p, Lang::En, "ctx", &turns);
+        let out = run_session_query(&p, Lang::En, "ctx", &turns, None);
         assert_eq!(out.unwrap(), "resposta fixa");
     }
 
@@ -2087,6 +3164,467 @@ mod tests {
         app.handle_key(key(KeyCode::Esc));
         assert!(app.settings.is_none());
 
+        std::env::remove_var("LIGHT_SECRETS");
+    }
+
+    // --- Assistente de estudo (prompt → 3 rodadas → estudo) ------------------
+
+    #[test]
+    fn study_wizard_runs_three_rounds_then_produces_study() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+
+        // Inicia no modo Introdutório (sem exigir dados léxicos).
+        app.start_study(StudyMode::Introductory, Denomination::Presbyterian);
+        assert!(
+            matches!(
+                app.input.as_ref().map(|i| i.kind),
+                Some(InputKind::StudyBrief)
+            ),
+            "abre o campo de assunto"
+        );
+        assert!(
+            app.ai.as_ref().unwrap().study.is_some(),
+            "há assistente ativo"
+        );
+
+        // Envia o assunto → dispara a rodada 1 (mock responde inline).
+        type_str(&mut app, "a graça");
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.input.is_none(), "campo de assunto fechou");
+
+        // Três rodadas de refinamento, escolhendo sempre a opção destacada.
+        for round in 1..=3u8 {
+            let flow = app.ai.as_ref().unwrap().study.as_ref().unwrap();
+            assert_eq!(flow.round, round, "rodada {round}");
+            assert!(!flow.options.is_empty(), "rodada {round} tem opções");
+            app.handle_key(key(KeyCode::Enter)); // escolhe a opção destacada
+        }
+
+        // Após a 3ª resposta, o estudo final é produzido e vira sessão normal.
+        let panel = app.ai.as_ref().unwrap();
+        assert!(panel.study.is_none(), "assistente concluído");
+        assert_eq!(panel.session.study_mode, Some(StudyMode::Introductory));
+        let last = panel.session.messages.last().unwrap();
+        assert_eq!(last.role, ChatRole::Assistant);
+        assert!(
+            last.content.contains("# Estudo —"),
+            "estudo renderizado: {}",
+            last.content
+        );
+
+        // Persistido como sessão retomável.
+        let id = panel.session.id.clone();
+        let store = SessionStore::open_default().unwrap();
+        assert!(store.get(&id).unwrap().is_some(), "estudo salvo");
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
+    }
+
+    #[test]
+    fn study_wizard_requires_provider() {
+        let mut app = seeded_app(); // provider vazio (padrão)
+        app.start_study(StudyMode::Introductory, Denomination::Presbyterian);
+        assert!(app.ai.is_none(), "sem provedor, não abre o assistente");
+        assert!(app.input.is_none());
+        assert!(
+            app.toast
+                .as_deref()
+                .unwrap_or_default()
+                .contains("provedor"),
+            "avisa que falta provedor"
+        );
+    }
+
+    #[test]
+    fn mode_picker_enter_starts_study_s_sets_default() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_CONFIG", dir.path().join("config.toml"));
+
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+
+        // `s` apenas define o padrão (sem iniciar estudo).
+        app.config.study_mode = StudyMode::Academic;
+        app.handle_key(key(KeyCode::Char('m')));
+        app.handle_key(key(KeyCode::Down)); // Academic → Devotional
+        app.handle_key(key(KeyCode::Char('s')));
+        assert!(app.mode_picker.is_none());
+        assert_eq!(app.config.study_mode, StudyMode::Devotional);
+        assert!(app.ai.is_none(), "`s` não inicia estudo");
+
+        // Enter inicia o estudo no modo destacado (Introdutório, sem léxico).
+        app.handle_key(key(KeyCode::Char('m')));
+        // Posicionado em Devotional (padrão atual); desce até Introdutório.
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.mode_picker.is_none());
+        assert!(
+            matches!(
+                app.input.as_ref().map(|i| i.kind),
+                Some(InputKind::StudyBrief)
+            ),
+            "Enter abre o assistente de estudo"
+        );
+
+        std::env::remove_var("LIGHT_CONFIG");
+    }
+
+    #[test]
+    fn study_custom_answer_records_and_advances() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.start_study(StudyMode::Introductory, Denomination::Presbyterian);
+        type_str(&mut app, "a graça");
+        app.handle_key(key(KeyCode::Enter)); // rodada 1
+
+        // `c` abre o campo de resposta própria.
+        app.handle_key(key(KeyCode::Char('c')));
+        assert!(
+            matches!(
+                app.input.as_ref().map(|i| i.kind),
+                Some(InputKind::StudyCustom)
+            ),
+            "abre resposta própria"
+        );
+        type_str(&mut app, "foco em Romanos 3");
+        app.handle_key(key(KeyCode::Enter));
+        let flow = app.ai.as_ref().unwrap().study.as_ref().unwrap();
+        assert_eq!(flow.round, 2, "avançou para a rodada 2");
+        assert_eq!(
+            flow.prior[0].1, "foco em Romanos 3",
+            "registrou a resposta própria"
+        );
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
+    }
+
+    #[test]
+    fn study_export_writes_markdown_and_lens_cycles() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+        std::env::set_var("LIGHT_CONFIG", dir.path().join("config.toml"));
+
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.start_study(StudyMode::Introductory, Denomination::Presbyterian);
+        type_str(&mut app, "a graça");
+        app.handle_key(key(KeyCode::Enter));
+        for _ in 0..3 {
+            app.handle_key(key(KeyCode::Enter));
+        }
+        assert!(app.ai.as_ref().unwrap().study.is_none(), "estudo pronto");
+
+        // `e` exporta o estudo para studies/*.md.
+        app.handle_key(key(KeyCode::Char('e')));
+        let studies = the_light_core::userdata::studies_dir().unwrap();
+        let mds: Vec<_> = std::fs::read_dir(&studies)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
+        assert_eq!(mds.len(), 1, "um estudo exportado");
+
+        // `L` cicla a lente denominacional do config.
+        let before = app.config.study_lens;
+        app.handle_key(key(KeyCode::Char('L')));
+        assert_ne!(app.config.study_lens, before, "lente mudou");
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
+        std::env::remove_var("LIGHT_CONFIG");
+    }
+
+    // --- Mouse: navegação clicável (Fase C) -------------------------------
+
+    fn left_click(app: &mut App, col: u16, row: u16) {
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+    }
+
+    #[test]
+    fn click_book_row_loads_book() {
+        let mut app = seeded_app();
+        app.click_targets = vec![(
+            Rect {
+                x: 0,
+                y: 3,
+                width: 18,
+                height: 1,
+            },
+            ClickTarget::Book(5),
+        )];
+        left_click(&mut app, 4, 3);
+        assert_eq!(app.book_idx, 5, "clicar a linha do livro o carrega");
+        assert_eq!(app.focus, Focus::Books);
+    }
+
+    #[test]
+    fn click_verse_moves_cursor() {
+        let mut app = app_with_reader();
+        app.selected = 0;
+        // Linha do versículo de índice 1, dentro da área do leitor.
+        app.click_targets = vec![(
+            Rect {
+                x: 10,
+                y: 7,
+                width: 20,
+                height: 1,
+            },
+            ClickTarget::Verse(1),
+        )];
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 12, 7));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 12, 7));
+        assert_eq!(app.selected, 1, "clique simples move o cursor ao versículo");
+        assert_eq!(app.focus, Focus::Reader);
+    }
+
+    #[test]
+    fn click_under_overlay_ignores_base_targets() {
+        let mut app = seeded_app();
+        let before = app.book_idx;
+        app.open_mode_picker();
+        // Um alvo de livro por baixo do modal NÃO deve ser ativado.
+        app.click_targets = vec![(
+            Rect {
+                x: 0,
+                y: 3,
+                width: 18,
+                height: 1,
+            },
+            ClickTarget::Book(5),
+        )];
+        left_click(&mut app, 4, 3);
+        assert_eq!(
+            app.book_idx, before,
+            "clique sob o modal não seleciona livro"
+        );
+        assert!(app.mode_picker.is_some(), "o modal segue aberto");
+    }
+
+    #[test]
+    fn mode_picker_click_selects_then_starts_study() {
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.open_mode_picker(); // pré-seleciona o padrão (Introdutório, índice 2)
+        let rect = Rect {
+            x: 0,
+            y: 4,
+            width: 40,
+            height: 2,
+        };
+        // Clica o modo Devocional (índice 1, ainda não selecionado, sem léxico).
+        app.click_targets = vec![(rect, ClickTarget::ModeRow(1))];
+        left_click(&mut app, 2, 4);
+        assert_eq!(app.mode_picker.as_ref().unwrap().selected, 1);
+        assert!(app.ai.is_none(), "1º clique apenas seleciona a linha");
+        left_click(&mut app, 2, 4);
+        assert!(
+            matches!(
+                app.input.as_ref().map(|i| i.kind),
+                Some(InputKind::StudyBrief)
+            ),
+            "2º clique (linha já selecionada) inicia o assistente"
+        );
+    }
+
+    #[test]
+    fn wheel_is_a_noop_in_mode_picker() {
+        let mut app = seeded_app();
+        app.open_mode_picker();
+        app.mode_picker.as_mut().unwrap().selected = 1;
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 1, 1));
+        assert_eq!(
+            app.mode_picker.as_ref().unwrap().selected,
+            1,
+            "a roda não move a seleção (use ↑↓)"
+        );
+    }
+
+    #[test]
+    fn click_study_option_advances_round() {
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.start_study(StudyMode::Introductory, Denomination::Presbyterian);
+        type_str(&mut app, "a graça");
+        app.handle_key(key(KeyCode::Enter)); // rodada 1, com opções do mock
+        assert_eq!(app.ai.as_ref().unwrap().study.as_ref().unwrap().round, 1);
+
+        let rect = Rect {
+            x: 0,
+            y: 10,
+            width: 40,
+            height: 1,
+        };
+        app.click_targets = vec![(rect, ClickTarget::StudyOption(1))];
+        left_click(&mut app, 2, 10);
+        let flow = app.ai.as_ref().unwrap().study.as_ref().unwrap();
+        assert_eq!(flow.round, 2, "clicar uma opção avança a rodada");
+    }
+
+    // --- Fase D: lente no preparo + aprofundar -----------------------------
+
+    #[test]
+    fn study_setup_cycles_lens_then_starts_with_it() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+        std::env::set_var("LIGHT_CONFIG", dir.path().join("config.toml"));
+
+        let mut app = seeded_app();
+        app.config.provider = "mock".into();
+        app.config.study_mode = StudyMode::Introductory; // sem dados léxicos
+        app.config.study_lens = Denomination::Presbyterian;
+
+        app.open_mode_picker();
+        assert_eq!(
+            app.mode_picker.as_ref().unwrap().lens,
+            Denomination::Presbyterian
+        );
+        app.handle_key(key(KeyCode::Right)); // cicla a lente
+        let chosen = app.mode_picker.as_ref().unwrap().lens;
+        assert_ne!(chosen, Denomination::Presbyterian, "←/→ muda a lente");
+
+        app.handle_key(key(KeyCode::Enter)); // inicia com modo + lente
+        assert!(matches!(
+            app.input.as_ref().map(|i| i.kind),
+            Some(InputKind::StudyBrief)
+        ));
+        let panel = app.ai.as_ref().unwrap();
+        assert_eq!(
+            panel.study.as_ref().unwrap().lens,
+            chosen,
+            "lente vai p/ o fluxo"
+        );
+        assert_eq!(
+            panel.session.study_lens.as_deref(),
+            Some(chosen.slug()),
+            "lente gravada na sessão"
+        );
+        assert_eq!(app.config.study_lens, chosen, "lente vira o novo padrão");
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
+        std::env::remove_var("LIGHT_CONFIG");
+    }
+
+    #[test]
+    fn study_setup_lens_click_cycles() {
+        let mut app = seeded_app();
+        app.open_mode_picker();
+        let before = app.mode_picker.as_ref().unwrap().lens;
+        app.click_targets = vec![(
+            Rect {
+                x: 0,
+                y: 3,
+                width: 40,
+                height: 1,
+            },
+            ClickTarget::LensCycle,
+        )];
+        left_click(&mut app, 5, 3);
+        assert_ne!(
+            app.mode_picker.as_ref().unwrap().lens,
+            before,
+            "clicar a lente cicla"
+        );
+    }
+
+    /// Roda o assistente de estudo do início ao fim (modo Introdutório, mock).
+    fn complete_a_study(app: &mut App) {
+        app.config.provider = "mock".into();
+        app.start_study(StudyMode::Introductory, Denomination::Presbyterian);
+        type_str(app, "a graça");
+        app.handle_key(key(KeyCode::Enter)); // rodada 1
+        for _ in 0..3 {
+            app.handle_key(key(KeyCode::Enter)); // escolhe a opção destacada
+        }
+    }
+
+    #[test]
+    fn deepen_reruns_and_retains_context_deeper() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        complete_a_study(&mut app);
+        let panel = app.ai.as_ref().unwrap();
+        assert!(panel.study.is_none(), "estudo concluído");
+        let ctx = panel.study_done.as_ref().expect("contexto retido");
+        assert_eq!(ctx.mode, StudyMode::Introductory);
+        let depth0 = ctx.depth;
+        let turns_before = panel.session.messages.len();
+
+        // `+` abre o foco do aprofundamento; Enter (vazio) re-roda mais fundo.
+        app.handle_key(key(KeyCode::Char('+')));
+        assert!(matches!(
+            app.input.as_ref().map(|i| i.kind),
+            Some(InputKind::StudyDeepen)
+        ));
+        app.handle_key(key(KeyCode::Enter));
+
+        let panel = app.ai.as_ref().unwrap();
+        // Pedido do usuário + nova seção do assistente foram anexados.
+        assert!(
+            panel.session.messages.len() >= turns_before + 2,
+            "aprofundamento anexa turnos (era {turns_before}, agora {})",
+            panel.session.messages.len()
+        );
+        let ctx2 = panel.study_done.as_ref().expect("novo contexto");
+        assert_eq!(ctx2.depth, depth0.deeper(), "profundidade avança");
+        assert_eq!(ctx2.mode, StudyMode::Introductory, "mesmo modo/lente");
+
+        std::env::remove_var("LIGHT_DATA_DIR");
+        std::env::remove_var("LIGHT_SECRETS");
+    }
+
+    #[test]
+    fn followup_on_study_is_study_aware() {
+        let _g = lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LIGHT_DATA_DIR", dir.path());
+        std::env::set_var("LIGHT_SECRETS", dir.path().join("secrets.toml"));
+
+        let mut app = seeded_app();
+        complete_a_study(&mut app);
+        // O follow-up usa o caminho normal de conversa, mas a sessão segue marcada
+        // como estudo (mode/lens preservados) e o contexto foi sementeado.
+        let panel = app.ai.as_ref().unwrap();
+        assert_eq!(panel.session.study_mode, Some(StudyMode::Introductory));
+        assert!(
+            !panel.session.context.trim().is_empty(),
+            "contexto sementeado para o follow-up"
+        );
+        assert!(panel.study_done.is_some());
+
+        app.handle_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "e quanto à fé?");
+        app.handle_key(key(KeyCode::Enter));
+        let panel = app.ai.as_ref().unwrap();
+        assert_eq!(
+            panel.session.study_mode,
+            Some(StudyMode::Introductory),
+            "follow-up preserva o estudo"
+        );
+
+        std::env::remove_var("LIGHT_DATA_DIR");
         std::env::remove_var("LIGHT_SECRETS");
     }
 }

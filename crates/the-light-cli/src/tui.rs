@@ -82,7 +82,7 @@ pub fn run(args: TuiArgs) -> ExitCode {
         }
     };
 
-    match the_light_tui::run(store, tid) {
+    match the_light_tui::run(store, tid, args.db.clone()) {
         Ok(()) => ExitCode::from(EXIT_OK),
         Err(e) => {
             eprintln!("Erro na TUI: {e}");

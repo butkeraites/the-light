@@ -20,8 +20,8 @@ pub use lexicon::{verified_lexicon, LexicalEntry, VerifiedLexicon, VerifiedOutpu
 pub use providers::{build_provider, estimate_cost_usd};
 pub use research::{build_research_provider, ResearchProvider, WebSource, RESEARCH_BACKENDS};
 pub use study::{
-    ask, ask_context, ask_session, numbered_passage, numbered_verses, split_sections, study,
-    StudyRequest, StudyResult, StudySection,
+    ask, ask_context, ask_session, numbered_passage, numbered_verses, parse_refinement,
+    refine_scope, split_sections, study, Refinement, StudyRequest, StudyResult, StudySection,
 };
 
 use std::str::FromStr;
@@ -30,7 +30,8 @@ use std::str::FromStr;
 pub const PROVIDERS: &[&str] = &["anthropic", "openai", "ollama"];
 
 /// Lente denominacional aplicada ao estudo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Denomination {
     /// Batista.
     Baptist,
@@ -133,6 +134,16 @@ impl StudyDepth {
             StudyDepth::Overview => "visão geral",
             StudyDepth::Exegetical => "exegético",
             StudyDepth::WordStudy => "estudo de palavras",
+        }
+    }
+
+    /// Próximo nível mais profundo (satura no mais profundo). Usado ao
+    /// **aprofundar** um estudo já lido.
+    pub fn deeper(self) -> StudyDepth {
+        match self {
+            StudyDepth::Overview => StudyDepth::Exegetical,
+            StudyDepth::Exegetical => StudyDepth::WordStudy,
+            StudyDepth::WordStudy => StudyDepth::WordStudy,
         }
     }
 }
@@ -377,7 +388,17 @@ impl LlmProvider for MockLlmProvider {
     fn model(&self) -> &str {
         &self.model
     }
-    fn complete(&self, _system: &str, _user: &str) -> Result<String> {
+    fn complete(&self, system: &str, _user: &str) -> Result<String> {
+        // Pedido de refinamento de escopo (o sistema pede o formato `PERGUNTA:`)
+        // → devolve uma rodada canônica, mantendo o assistente de estudo
+        // utilizável offline e em testes. Demais chamadas usam a resposta fixa.
+        if system.contains("PERGUNTA:") {
+            return Ok("PERGUNTA: Qual recorte você prefere?\n\
+                 - Efésios 2.8-9\n\
+                 - Panorama temático da graça\n\
+                 - Aplicação pastoral"
+                .to_string());
+        }
         Ok(self.response.clone())
     }
 }
@@ -385,6 +406,13 @@ impl LlmProvider for MockLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn study_depth_deeper_steps_and_saturates() {
+        assert_eq!(StudyDepth::Overview.deeper(), StudyDepth::Exegetical);
+        assert_eq!(StudyDepth::Exegetical.deeper(), StudyDepth::WordStudy);
+        assert_eq!(StudyDepth::WordStudy.deeper(), StudyDepth::WordStudy);
+    }
 
     #[test]
     fn denomination_parsing_pt_en() {

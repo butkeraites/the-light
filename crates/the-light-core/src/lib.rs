@@ -11,8 +11,10 @@
 
 pub mod ai;
 pub mod config;
+pub mod export;
 pub mod model;
 pub mod reference;
+pub mod scholarly;
 pub mod search;
 pub mod source;
 pub mod store;

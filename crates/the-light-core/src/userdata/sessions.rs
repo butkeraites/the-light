@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::Result;
-use crate::ai::ChatRole;
+use crate::ai::{ChatRole, StudyMode};
 use crate::model::Lang;
 
 /// Um turno de uma conversa de IA.
@@ -49,6 +49,13 @@ pub struct Session {
     /// Turnos da conversa, em ordem.
     #[serde(default)]
     pub messages: Vec<Message>,
+    /// Modo do estudo, quando a sessão é um **estudo** (não uma conversa livre).
+    /// `None` = conversa de IA comum. Distingue os dois no navegador (`s`).
+    #[serde(default)]
+    pub study_mode: Option<StudyMode>,
+    /// Lente denominacional do estudo (slug), quando aplicável.
+    #[serde(default)]
+    pub study_lens: Option<String>,
 }
 
 impl Session {
@@ -80,6 +87,8 @@ impl Session {
             created_at: now,
             updated_at: now,
             messages: Vec::new(),
+            study_mode: None,
+            study_lens: None,
         }
     }
 
@@ -190,6 +199,8 @@ mod tests {
                 content: "o que significa?".to_string(),
                 at: ts(updated),
             }],
+            study_mode: None,
+            study_lens: None,
         }
     }
 

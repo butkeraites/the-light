@@ -22,10 +22,14 @@ use the_light_core::search::{HL_END, HL_START};
 use the_light_core::ai::StudyMode;
 
 use crate::app::{
-    AiPanel, AiStatus, App, Focus, Input, InputKind, ModePicker, Selection, SessionBrowser,
-    SettingsMode,
+    AiPanel, AiStatus, App, ClickTarget, Focus, Input, InputKind, ModePicker, ScholarlyPanel,
+    ScholarlyState, Selection, SessionBrowser, SettingsMode,
 };
 use crate::theme::Palette;
+
+/// Lista de alvos clicáveis que uma função de desenho produz (ver
+/// [`crate::app::ClickTarget`]). O chamador estende `app.click_targets`.
+type Hits = Vec<(Rect, ClickTarget)>;
 
 /// Bloco padrão: borda arredondada, respiro interno e título estilizado.
 fn block(title: &str, focused: bool, pal: &Palette) -> Block<'static> {
@@ -45,6 +49,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Sem leitor renderizado neste frame não há área de seleção; reposiciona-se
     // adiante quando o leitor é de fato desenhado.
     app.reader_inner = None;
+    // Alvos clicáveis são remontados a cada frame pelas funções de desenho.
+    app.click_targets.clear();
     // Degradação graciosa em janelas minúsculas (evita layout impossível).
     if area.height < 3 || area.width < 24 {
         frame.render_widget(Paragraph::new("janela pequena demais"), area);
@@ -74,15 +80,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Length(34),
         ])
         .split(rows[1]);
-        draw_books(frame, app, body[0], &pal);
-        app.reader_inner = Some(draw_reader(frame, app, body[1], &pal));
+        let book_hits = draw_books(frame, app, body[0], &pal);
+        app.click_targets.extend(book_hits);
+        let (inner, verse_hits) = draw_reader(frame, app, body[1], &pal);
+        app.reader_inner = Some(inner);
+        app.click_targets.extend(verse_hits);
         draw_panel(frame, app, body[2], &pal);
     } else if bw >= 46 {
         let body = Layout::horizontal([Constraint::Length(20), Constraint::Min(26)]).split(rows[1]);
-        draw_books(frame, app, body[0], &pal);
-        app.reader_inner = Some(draw_reader(frame, app, body[1], &pal));
+        let book_hits = draw_books(frame, app, body[0], &pal);
+        app.click_targets.extend(book_hits);
+        let (inner, verse_hits) = draw_reader(frame, app, body[1], &pal);
+        app.reader_inner = Some(inner);
+        app.click_targets.extend(verse_hits);
     } else {
-        app.reader_inner = Some(draw_reader(frame, app, rows[1], &pal));
+        let (inner, verse_hits) = draw_reader(frame, app, rows[1], &pal);
+        app.reader_inner = Some(inner);
+        app.click_targets.extend(verse_hits);
     }
 
     // Pinta a seleção do mouse sobre o leitor e remonta o texto copiável.
@@ -97,17 +111,31 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_help(frame, area, &pal);
     }
     if app.ai.is_some() {
-        draw_ai_panel(frame, app, area, &pal);
+        let hits = draw_ai_panel(frame, app, area, &pal);
+        app.click_targets.extend(hits);
     }
     if app.settings.is_some() {
-        draw_settings(frame, app, area, &pal);
+        let hits = draw_settings(frame, app, area, &pal);
+        app.click_targets.extend(hits);
     }
-    if let Some(browser) = &app.sessions {
-        draw_sessions(frame, browser, area, &pal);
-    }
-    if let Some(picker) = &app.mode_picker {
-        draw_mode_picker(frame, picker, area, &pal);
-    }
+    let hits = if let Some(browser) = &app.sessions {
+        draw_sessions(frame, browser, area, &pal)
+    } else {
+        Hits::new()
+    };
+    app.click_targets.extend(hits);
+    let hits = if let Some(picker) = &app.mode_picker {
+        draw_mode_picker(frame, picker, area, &pal)
+    } else {
+        Hits::new()
+    };
+    app.click_targets.extend(hits);
+    let hits = if let Some(panel) = &app.scholarly {
+        draw_scholarly(frame, panel, app.spinner, area, &pal)
+    } else {
+        Hits::new()
+    };
+    app.click_targets.extend(hits);
 }
 
 /// Cabeçalho: marca à esquerda + breadcrumb (Livro Cap · VERSÃO) à direita.
@@ -200,7 +228,9 @@ fn highlight_spans(s: &str, pal: &Palette) -> Vec<Span<'static>> {
     spans
 }
 
-fn draw_books(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
+fn draw_books(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) -> Hits {
+    let blk = block("Livros", app.focus == Focus::Books, pal);
+    let inner = blk.inner(area);
     let items: Vec<ListItem> = BOOKS
         .iter()
         .map(|b| {
@@ -213,18 +243,37 @@ fn draw_books(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         .collect();
 
     let list = List::new(items)
-        .block(block("Livros", app.focus == Focus::Books, pal))
+        .block(blk)
         .highlight_style(pal.fg(pal.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("❯ ");
 
     let mut state = ListState::default();
     state.select(Some(app.book_idx));
     frame.render_stateful_widget(list, area, &mut state);
+
+    // Cada linha visível (1 por livro) vira um alvo clicável a partir do offset
+    // que o widget acabou de fixar.
+    let offset = state.offset();
+    let mut hits = Hits::new();
+    for r in 0..inner.height {
+        let idx = offset + r as usize;
+        if idx >= BOOKS.len() {
+            break;
+        }
+        let rect = Rect {
+            x: inner.x,
+            y: inner.y + r,
+            width: inner.width,
+            height: 1,
+        };
+        hits.push((rect, ClickTarget::Book(idx)));
+    }
+    hits
 }
 
 /// Desenha o leitor e devolve o retângulo **interno** (onde os versículos são
 /// pintados) — usado para restringir a seleção de texto via mouse.
-fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) -> Rect {
+fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) -> (Rect, Hits) {
     let title = format!(
         "{} {}  ·  {}",
         app.book_name(),
@@ -242,7 +291,7 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) -> Rect 
         ))
         .block(blk);
         frame.render_widget(p, area);
-        return inner;
+        return (inner, Hits::new());
     }
 
     let numw = app
@@ -255,11 +304,15 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) -> Rect 
     let prefix_w = numw + 2;
     let avail = inner_width.saturating_sub(prefix_w).max(1);
 
+    // Altura (em linhas) de cada versículo após a quebra — usada tanto para o
+    // item da lista quanto para mapear cliques de volta ao índice do versículo.
+    let mut heights: Vec<u16> = Vec::with_capacity(app.verses.len());
     let items: Vec<ListItem> = app
         .verses
         .iter()
         .map(|(n, text)| {
             let segments = wrap(text, avail);
+            heights.push(segments.len().max(1) as u16);
             let mut lines: Vec<Line> = Vec::new();
             for (i, seg) in segments.iter().enumerate() {
                 if i == 0 {
@@ -285,7 +338,30 @@ fn draw_reader(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) -> Rect 
     let mut state = ListState::default();
     state.select(Some(app.selected));
     frame.render_stateful_widget(list, area, &mut state);
-    inner
+
+    // Mapeia cada versículo visível ao seu intervalo de linhas (top-down a partir
+    // do offset que o widget fixou), respeitando a altura quebrada de cada um.
+    let offset = state.offset();
+    let mut hits = Hits::new();
+    let mut y = inner.y;
+    let bottom = inner.y.saturating_add(inner.height);
+    for (idx, h) in heights.iter().enumerate().skip(offset) {
+        if y >= bottom {
+            break;
+        }
+        let visible = (*h).min(bottom - y);
+        hits.push((
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: visible,
+            },
+            ClickTarget::Verse(idx),
+        ));
+        y = y.saturating_add(*h);
+    }
+    (inner, hits)
 }
 
 /// Pinta a seleção do mouse sobre o buffer **já renderizado** do leitor e remonta
@@ -583,6 +659,9 @@ fn draw_input(frame: &mut Frame, area: Rect, input: &Input, pal: &Palette, boxed
         InputKind::GoTo => "ir para",
         InputKind::Search => "buscar",
         InputKind::Ask => "perguntar",
+        InputKind::StudyBrief => "estudar",
+        InputKind::StudyCustom => "sua resposta",
+        InputKind::StudyDeepen => "aprofundar (opcional)",
     };
     let mut spans = vec![
         Span::styled("❯ ", pal.fg(pal.accent).add_modifier(Modifier::BOLD)),
@@ -635,7 +714,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         return;
     }
     let hints = format!(
-        " ↑↓ versículo · n/p cap · v versão · / buscar · g ir · x refs · t tema [{}] · a IA · s conversas · m modo · c chaves · ? ajuda",
+        " ↑↓ versículo · n/p cap · v versão · / buscar · g ir · x refs · t tema [{}] · a IA · s conversas · m estudar · d dados · c chaves · ? ajuda",
         app.theme()
     );
     frame.render_widget(Paragraph::new(hints).style(pal.fg(pal.dim)), area);
@@ -655,14 +734,16 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
         Line::from("  Home/End    início / fim · PgUp/PgDn ±10"),
         Line::from("  v           trocar versão"),
         Line::from("  a           perguntar/continuar a conversa com a IA"),
-        Line::from("  s           conversas salvas (retomar)"),
-        Line::from("  m           modo de estudo padrão (acadêmico/devocional/…)"),
+        Line::from("  s           conversas e estudos salvos (retomar)"),
+        Line::from("  m           estudar (modo + lente → assunto → refinar → estudo)"),
+        Line::from("  d           dados acadêmicos (instalar línguas originais + léxico)"),
         Line::from("  c           configurar provedor/chaves de IA"),
         Line::from("  /           buscar (full-text)"),
         Line::from("  g           ir para referência (ex.: Jo 3.16)"),
         Line::from("  x           referências cruzadas"),
         Line::from("  t           trocar tema (dark/light/none)"),
-        Line::from("  mouse       arraste nos versículos p/ copiar (⌥/Shift = nativo)"),
+        Line::from("  estudo      a continua · + aprofunda · e exporta · L lente"),
+        Line::from("  mouse       clique p/ navegar · arraste copia (roda: use ↑↓)"),
         Line::from("  q / Esc     sair"),
         Line::from(""),
         Line::from(Span::styled("  ? ou Esc fecha esta ajuda", pal.fg(pal.dim))),
@@ -681,15 +762,32 @@ fn draw_help(frame: &mut Frame, area: Rect, pal: &Palette) {
 }
 
 /// Overlay do seletor de modo de estudo padrão (tecla `m`).
-fn draw_mode_picker(frame: &mut Frame, picker: &ModePicker, area: Rect, pal: &Palette) {
+fn draw_mode_picker(frame: &mut Frame, picker: &ModePicker, area: Rect, pal: &Palette) -> Hits {
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
-            "Modo de estudo padrão",
+            "Estudar — escolha o modo e a lente",
             pal.fg(pal.accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
+    // Campo da lente (clicável/ciclável) no topo.
+    let lens_row = lines.len() as u16;
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Lente:  ",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("◀ {} ▶", picker.lens.name_pt()),
+            pal.selection_style(),
+        ),
+        Span::styled("   (←/→ ou clique)", pal.fg(pal.dim)),
+    ]));
+    lines.push(Line::from(""));
+    // Linha (relativa ao topo interno) onde cada modo começa.
+    let mut mode_rows: Vec<u16> = Vec::new();
     for (i, m) in StudyMode::all().iter().enumerate() {
+        mode_rows.push(lines.len() as u16);
         let cursor = if i == picker.selected { "❯ " } else { "  " };
         let style = if i == picker.selected {
             pal.selection_style()
@@ -707,7 +805,7 @@ fn draw_mode_picker(frame: &mut Frame, picker: &ModePicker, area: Rect, pal: &Pa
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  ↑↓ move · Enter define padrão · Esc fecha",
+        "  ↑↓ modo · ←→ lente · Enter estuda · s padrão · Esc fecha",
         pal.fg(pal.dim),
     )));
 
@@ -717,31 +815,173 @@ fn draw_mode_picker(frame: &mut Frame, picker: &ModePicker, area: Rect, pal: &Pa
         .padding(Padding::horizontal(1))
         .border_style(pal.fg(pal.accent))
         .title(Line::from(Span::styled(
-            " Modo de estudo ",
+            " Estudar ",
             pal.fg(pal.accent).add_modifier(Modifier::BOLD),
         )));
+    let inner = blk.inner(popup);
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(blk), popup);
+
+    let mut hits = Hits::new();
+    let limit = inner.y.saturating_add(inner.height);
+    // A linha da lente é clicável (cicla para a próxima).
+    let ly = inner.y.saturating_add(lens_row);
+    if ly < limit {
+        hits.push((
+            Rect {
+                x: inner.x,
+                y: ly,
+                width: inner.width,
+                height: 1,
+            },
+            ClickTarget::LensCycle,
+        ));
+    }
+    // Cada modo é clicável (cobre as 2 linhas: nome + descrição).
+    for (i, &rel) in mode_rows.iter().enumerate() {
+        let y = inner.y.saturating_add(rel);
+        if y >= limit {
+            break;
+        }
+        hits.push((
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 2.min(limit - y),
+            },
+            ClickTarget::ModeRow(i),
+        ));
+    }
+    hits
+}
+
+/// Overlay dos **dados acadêmicos** (línguas originais + léxico): status +
+/// instalação em segundo plano (tecla `d`).
+fn draw_scholarly(
+    frame: &mut Frame,
+    panel: &ScholarlyPanel,
+    spinner: u8,
+    area: Rect,
+    pal: &Palette,
+) -> Hits {
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "Dados acadêmicos — STEPBible (CC BY 4.0)",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    // Linha (relativa ao topo interno) do botão "instalar", quando aplicável.
+    let mut install_row: Option<u16> = None;
+    match &panel.state {
+        ScholarlyState::Absent => {
+            lines.push(Line::from(
+                "  Línguas originais (hebraico/grego) + Strong + léxico.",
+            ));
+            lines.push(Line::from(
+                "  Necessário para o modo Acadêmico/Pregação fundamentar termos no original.",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Não instalado · ~78 MB de download · ~447 mil tokens.",
+                pal.fg(pal.warn),
+            )));
+            lines.push(Line::from(""));
+            install_row = Some(lines.len() as u16);
+            lines.push(Line::from(Span::styled(
+                "  Enter/i/clique instala (baixa da internet) · Esc fecha",
+                pal.fg(pal.dim),
+            )));
+        }
+        ScholarlyState::Installed { tokens, lexicon } => {
+            lines.push(Line::from(Span::styled(
+                format!("  ✓ Instalado: {tokens} tokens · {lexicon} entradas de léxico"),
+                pal.fg(pal.accent),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "  O modo Acadêmico já fundamenta os termos a partir destes dados.",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  Esc fecha", pal.fg(pal.dim))));
+        }
+        ScholarlyState::Installing(msg) => {
+            const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let sp = FRAMES[(spinner as usize) % FRAMES.len()];
+            lines.push(Line::from(Span::styled(
+                format!("  {sp} {msg}"),
+                pal.fg(pal.accent),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Instalando — pode levar um minuto; não feche.",
+                pal.fg(pal.dim),
+            )));
+        }
+        ScholarlyState::Error(e) => {
+            lines.push(Line::from(Span::styled(
+                format!("  ⚠ {e}"),
+                pal.fg(pal.warn),
+            )));
+            lines.push(Line::from(""));
+            install_row = Some(lines.len() as u16);
+            lines.push(Line::from(Span::styled(
+                "  Enter/i/clique tenta de novo · Esc fecha",
+                pal.fg(pal.dim),
+            )));
+        }
+    }
+
+    let popup = centered_rect(76, lines.len() as u16 + 2, area);
+    let blk = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
+        .border_style(pal.fg(pal.accent))
+        .title(Line::from(Span::styled(
+            " Dados acadêmicos ",
+            pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+        )));
+    let inner = blk.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(blk), popup);
+
+    let mut hits = Hits::new();
+    if let Some(rel) = install_row {
+        let y = inner.y.saturating_add(rel);
+        if y < inner.y.saturating_add(inner.height) {
+            hits.push((
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
+                ClickTarget::ScholarlyInstall,
+            ));
+        }
+    }
+    hits
 }
 
 /// Overlay rolável com a **conversa** com a IA (tecla `a`; navegada por `s`).
-fn draw_ai_panel(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
+fn draw_ai_panel(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) -> Hits {
     // Captura o que vem de `&App` antes de emprestar `app.ai` mutavelmente: o
     // render normaliza o offset de rolagem guardado em `panel.scroll`.
     let lang = app.lang();
     let spinner = app.spinner;
     let Some(panel) = app.ai.as_mut() else {
-        return;
+        return Hits::new();
     };
     let session = &panel.session;
     let w = (area.width * 4 / 5).clamp(20, 92);
     let h = (area.height * 4 / 5).max(6);
     let popup = centered_rect(w, h, area);
 
-    let title = if session.title.is_empty() {
-        format!(" Conversa — {} ", session.anchor_label)
-    } else {
-        format!(" {} — {} ", session.title, session.anchor_label)
+    let title = match (session.title.is_empty(), session.anchor_label.is_empty()) {
+        (true, _) => format!(" Conversa — {} ", session.anchor_label),
+        (false, true) => format!(" {} ", session.title),
+        (false, false) => format!(" {} — {} ", session.title, session.anchor_label),
     };
     let blk = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -786,6 +1026,13 @@ fn draw_ai_panel(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
         ))),
         AiStatus::Idle => {}
     }
+    // Opções de refinamento de escopo: renderizadas num bloco FIXO no rodapé
+    // (sempre visível e clicável), não no fluxo rolável. Capturadas aqui.
+    let study_opts: Option<(u8, usize, Vec<String>)> = panel
+        .study
+        .as_ref()
+        .filter(|f| !f.options.is_empty())
+        .map(|f| (f.round, f.selected, f.options.clone()));
     // Lista numerada de saltos rápidos (a "viagem rápida").
     if !panel.refs.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -811,16 +1058,77 @@ fn draw_ai_panel(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
         }
     }
 
-    // Limpa o fundo e delega rolagem + clamp ao parágrafo rolável (reserva 1
-    // linha no fundo para o rodapé de atalhos). Mantém quebra e clamp juntos.
+    // Altura do bloco fixo de opções (cabeçalho + 1 por opção), limitada ao
+    // espaço acima do rodapé.
+    let mut hits = Hits::new();
+    let study_h = match &study_opts {
+        Some((_, _, opts)) => {
+            let want = 1 + opts.len() as u16;
+            want.min(inner.height.saturating_sub(2)) // deixa ≥1 linha de conversa + rodapé
+        }
+        None => 0,
+    };
+    // Limpa o fundo e delega rolagem + clamp ao parágrafo rolável (reserva o
+    // rodapé + o bloco de opções). Mantém quebra e clamp juntos.
     frame.render_widget(Clear, popup);
-    panel.scroll.render(frame, popup, blk, Text::from(lines), 1);
+    panel
+        .scroll
+        .render(frame, popup, blk, Text::from(lines), 1 + study_h);
+
+    // Bloco fixo de opções logo acima do rodapé (com alvos clicáveis).
+    if let Some((round, selected, opts)) = study_opts {
+        if study_h > 0 {
+            // Aritmética saturante (defensiva): nunca produz um Rect degenerado.
+            let footer_y = inner.y.saturating_add(inner.height).saturating_sub(1);
+            let top = footer_y.saturating_sub(study_h);
+            let header = Rect {
+                x: inner.x,
+                y: top,
+                width: inner.width,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("Rodada {round}/3  (clique/Enter/1-9 · c digita a sua · Esc cancela):"),
+                    pal.fg(pal.accent).add_modifier(Modifier::BOLD),
+                ))),
+                header,
+            );
+            for (i, opt) in opts.iter().enumerate() {
+                let y = top.saturating_add(1).saturating_add(i as u16);
+                if y >= footer_y {
+                    break;
+                }
+                let marker = if i < 9 {
+                    format!("[{}] ", i + 1)
+                } else {
+                    "    ".to_string()
+                };
+                let style = if i == selected {
+                    pal.selection_style()
+                } else {
+                    pal.fg(pal.accent)
+                };
+                let rect = Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(format!("  {marker}{opt}"), style))),
+                    rect,
+                );
+                hits.push((rect, ClickTarget::StudyOption(i)));
+            }
+        }
+    }
 
     // Rodapé (sobrescreve a última linha interna) com os atalhos da conversa.
     if inner.height >= 1 {
         let frect = Rect {
             x: inner.x,
-            y: inner.y + inner.height - 1,
+            y: inner.y.saturating_add(inner.height).saturating_sub(1),
             width: inner.width,
             height: 1,
         };
@@ -829,6 +1137,7 @@ fn draw_ai_panel(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
             frect,
         );
     }
+    hits
 }
 
 /// Quebra uma linha de resposta em spans, realçando as referências citadas.
@@ -857,23 +1166,34 @@ fn ref_highlighted_line(src: &str, pal: &Palette) -> Line<'static> {
 
 /// Rodapé do overlay de conversa: provedor/modelo + atalhos.
 fn ai_footer(panel: &AiPanel) -> String {
-    let nav = if panel.refs.is_empty() {
-        "a continua · ↑↓ rola · Esc fecha"
+    // Em refinamento de escopo os atalhos são os da escolha de opções.
+    let refining = panel.study.as_ref().is_some_and(|f| !f.options.is_empty());
+    if refining {
+        return "↑↓ move · Enter/1-9 escolhe · c digita a sua · Esc cancela".to_string();
+    }
+    let is_study = panel.session.study_mode.is_some() && panel.study.is_none();
+    let extra = if is_study {
+        " · + aprofunda · e exporta · L lente"
     } else {
-        "a continua · Tab/1-9 salta · ↑↓ rola · Esc fecha"
+        ""
+    };
+    let nav = if panel.refs.is_empty() {
+        format!("a continua · ↑↓ rola{extra} · Esc fecha")
+    } else {
+        format!("a continua · Tab/1-9 salta · ↑↓ rola{extra} · Esc fecha")
     };
     let model = &panel.session.model;
     if model.is_empty() {
-        nav.to_string()
+        nav
     } else {
         format!("{model} · {nav}")
     }
 }
 
 /// Modal de configuração de provedor/chaves de IA (tecla `c`).
-fn draw_settings(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
+fn draw_settings(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) -> Hits {
     let Some(settings) = &app.settings else {
-        return;
+        return Hits::new();
     };
     let active = app.config.provider.trim().to_ascii_lowercase();
 
@@ -884,6 +1204,8 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         )),
         Line::from(""),
     ];
+    // Linha (relativa ao topo interno) onde os provedores começam.
+    let provider_top = lines.len() as u16;
     for (i, name) in PROVIDERS.iter().enumerate() {
         let is_sel = i == settings.selected;
         let star = if active.as_str() == *name { "★" } else { " " };
@@ -939,19 +1261,43 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
             " Configurar IA ",
             pal.fg(pal.accent).add_modifier(Modifier::BOLD),
         )));
+    let inner = blk.inner(popup);
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(blk), popup);
+
+    // Linhas de provedor clicáveis (uma por provedor) — só fora da edição de chave.
+    let mut hits = Hits::new();
+    if matches!(settings.mode, SettingsMode::List) {
+        for i in 0..PROVIDERS.len() {
+            let y = inner.y + provider_top + i as u16;
+            if y >= inner.y + inner.height {
+                break;
+            }
+            hits.push((
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
+                ClickTarget::SettingsRow(i),
+            ));
+        }
+    }
+    hits
 }
 
 /// Navegador de conversas salvas (tecla `s`).
-fn draw_sessions(frame: &mut Frame, browser: &SessionBrowser, area: Rect, pal: &Palette) {
+fn draw_sessions(frame: &mut Frame, browser: &SessionBrowser, area: Rect, pal: &Palette) -> Hits {
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
-            "Conversas salvas",
+            "Conversas e estudos salvos",
             pal.fg(pal.accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
+    // Linha (relativa ao topo interno) onde a 1ª conversa aparece.
+    let rows_top = lines.len() as u16;
     if browser.items.is_empty() {
         lines.push(Line::from(Span::styled(
             "  (nenhuma ainda — tecle a para começar uma conversa)",
@@ -966,8 +1312,14 @@ fn draw_sessions(frame: &mut Frame, browser: &SessionBrowser, area: Rect, pal: &
             } else {
                 pal.fg(pal.dim)
             };
+            // Âncora = capítulo (conversa) ou tag de estudo `[estudo {modo}]`.
+            let tag = match s.study_mode {
+                Some(mode) => format!("[estudo {}]", mode.name_pt()),
+                None if s.anchor_label.is_empty() => "[conversa]".to_string(),
+                None => s.anchor_label.clone(),
+            };
             lines.push(Line::from(Span::styled(
-                format!("{cursor}{}  ·  {}  ·  {when}", s.title, s.anchor_label),
+                format!("{cursor}{}  ·  {tag}  ·  {when}", s.title),
                 style,
             )));
         }
@@ -987,8 +1339,28 @@ fn draw_sessions(frame: &mut Frame, browser: &SessionBrowser, area: Rect, pal: &
             " Conversas ",
             pal.fg(pal.accent).add_modifier(Modifier::BOLD),
         )));
+    let inner = blk.inner(popup);
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(blk), popup);
+
+    // Cada conversa/estudo é uma linha clicável.
+    let mut hits = Hits::new();
+    for i in 0..browser.items.len() {
+        let y = inner.y + rows_top + i as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+        hits.push((
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
+            ClickTarget::SessionRow(i),
+        ));
+    }
+    hits
 }
 
 /// Retângulo centralizado em `area`, limitado ao tamanho disponível.
@@ -1052,7 +1424,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mut app = App::new(store, "kjv".into()).unwrap();
+        let mut app = App::new(store, "kjv".into(), None).unwrap();
         app.go_to(&parse_reference("Rm 3.23").unwrap());
         app
     }
@@ -1407,6 +1779,8 @@ mod tests {
             status: AiStatus::Idle,
             ref_selected: 0,
             scroll: crate::scroll::ScrollState::default(),
+            study: None,
+            study_done: None,
         }
     }
 

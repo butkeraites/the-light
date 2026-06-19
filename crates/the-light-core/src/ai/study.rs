@@ -27,17 +27,22 @@ pub struct StudyRequest<'a> {
     pub depth: StudyDepth,
     /// Idioma da resposta.
     pub language: Lang,
-    /// Passagem (texto do banco local).
-    pub passage: &'a Passage,
+    /// Passagem (texto do banco local). `None` = estudo **temático** (sem
+    /// passagem única) — o assunto vem de `brief` e o modelo cita as referências
+    /// que discutir.
+    pub passage: Option<&'a Passage>,
     /// Referências cruzadas locais (rótulos), usadas como contexto.
     pub cross_references: Vec<String>,
     /// Dados léxicos verificados (línguas originais + Strong) — injetados no
-    /// prompt apenas quando `mode.wants_lexical()`. Vazio quando não há cobertura
-    /// ou o modo não usa léxico.
+    /// prompt apenas quando há passagem e `mode.wants_lexical()`. Vazio quando não
+    /// há cobertura ou o modo não usa léxico.
     pub verified_lexicon: VerifiedLexicon,
     /// Fontes secundárias da web (pesquisa opt-in). Vazio = offline (padrão).
     /// Quando presentes, são injetadas no prompt e citáveis por `[W:n]`.
     pub web_sources: Vec<WebSource>,
+    /// Foco do estudo definido pelo usuário (prompt + refinamento da TUI).
+    /// Injetado no prompt quando presente; é o assunto de um estudo temático.
+    pub brief: Option<String>,
 }
 
 /// Uma seção estruturada da interpretação (cabeçalho `## ` + corpo).
@@ -47,6 +52,15 @@ pub struct StudySection {
     pub heading: String,
     /// Corpo da seção (texto entre este cabeçalho e o próximo).
     pub body: String,
+}
+
+/// Uma rodada de refinamento de escopo: pergunta + opções de múltipla escolha.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refinement {
+    /// Pergunta de refinamento proposta pelo modelo.
+    pub question: String,
+    /// Opções sugeridas (o usuário também pode digitar a sua própria).
+    pub options: Vec<String>,
 }
 
 /// Resultado de um estudo: separa o texto citado (banco) da interpretação (LLM).
@@ -158,8 +172,8 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
     } else {
         req.cross_references.join("; ")
     };
-    // Bloco léxico verificado só nos modos que o pedem (acadêmico/pregação).
-    let lexical = if req.mode.wants_lexical() {
+    // Bloco léxico verificado só com passagem e nos modos que o pedem.
+    let lexical = if req.passage.is_some() && req.mode.wants_lexical() {
         format!(
             "\nDADOS LÉXICOS:\n{}\n\nAo tratar de termos no original, cite EXCLUSIVAMENTE os \
              Strong do bloco acima usando a marca [V:NÚMERO]; se o bloco indicar que não há \
@@ -188,22 +202,51 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
         }
         b
     };
-    format!(
-        "Faça um estudo bíblico ({modo}) da passagem {referencia}, pela lente {lente}, \
-         profundidade {prof}.\n\n\
-         TEXTO DA PASSAGEM (acervo local — cite por número de versículo):\n{texto}\n\n\
-         REFERÊNCIAS CRUZADAS LOCAIS (contexto, use se ajudar):\n{xrefs}\n{lexical}{web}\n\
-         Produza a interpretação seguindo as regras do sistema (estrutura de seções do modo, \
-         citar versículos, separar texto de interpretação, marcar a lente, sinalizar divergências).",
-        modo = req.mode.name_pt(),
-        referencia = req.reference_label,
-        lente = req.lens.name_pt(),
-        prof = req.depth.name_pt(),
-        texto = passage_text,
-        xrefs = xrefs,
-        lexical = lexical,
-        web = web,
-    )
+    // Foco do estudo (prompt do usuário + refinamento), quando houver.
+    let brief = match req.brief.as_deref().map(str::trim) {
+        Some(b) if !b.is_empty() => {
+            format!("\n\nFOCO DO ESTUDO (definido pelo usuário — atenda exatamente a isto):\n{b}")
+        }
+        _ => String::new(),
+    };
+
+    if req.passage.is_some() {
+        format!(
+            "Faça um estudo bíblico ({modo}) da passagem {referencia}, pela lente {lente}, \
+             profundidade {prof}.{brief}\n\n\
+             TEXTO DA PASSAGEM (acervo local — cite por número de versículo):\n{texto}\n\n\
+             REFERÊNCIAS CRUZADAS LOCAIS (contexto, use se ajudar):\n{xrefs}\n{lexical}{web}\n\
+             Produza a interpretação seguindo as regras do sistema (estrutura de seções do modo, \
+             citar versículos, separar texto de interpretação, marcar a lente, sinalizar divergências).",
+            modo = req.mode.name_pt(),
+            referencia = req.reference_label,
+            lente = req.lens.name_pt(),
+            prof = req.depth.name_pt(),
+            brief = brief,
+            texto = passage_text,
+            xrefs = xrefs,
+            lexical = lexical,
+            web = web,
+        )
+    } else {
+        // Estudo temático: sem passagem fixada; o modelo abrange as passagens
+        // pertinentes e CITA cada referência que discutir.
+        format!(
+            "Faça um estudo bíblico ({modo}) TEMÁTICO, pela lente {lente}, profundidade {prof}.{brief}\n\n\
+             Não há uma única passagem fixada: trate o tema abrangendo as passagens bíblicas \
+             pertinentes e CITE cada referência que discutir (ex.: Ef 2.8). NÃO invente versículos \
+             nem referências.\n\
+             REFERÊNCIAS RELACIONADAS (contexto, use se ajudar):\n{xrefs}\n{web}\n\
+             Produza a interpretação seguindo as regras do sistema (estrutura de seções do modo, \
+             citar versículos, separar texto de interpretação, marcar a lente, sinalizar divergências).",
+            modo = req.mode.name_pt(),
+            lente = req.lens.name_pt(),
+            prof = req.depth.name_pt(),
+            brief = brief,
+            xrefs = xrefs,
+            web = web,
+        )
+    }
 }
 
 /// Índices de fontes web citadas (`[W:n]`) num texto, para validar o intervalo.
@@ -230,14 +273,14 @@ fn cited_web_indices(text: &str) -> Vec<usize> {
 
 /// Executa o estudo: chama o provedor e devolve um [`StudyResult`].
 pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResult> {
-    let passage_text = numbered_passage(req.passage);
+    let passage_text = req.passage.map(numbered_passage).unwrap_or_default();
     let system = prompts::system_prompt(req.mode, req.lens, req.depth, req.language);
     let user = user_prompt(req, &passage_text);
     let interpretation = provider.complete(&system, &user)?;
     let sections = split_sections(&interpretation);
     // Verificação anti-alucinação: sinaliza Strong citados fora do acervo
-    // (política `flag` — não altera o texto). Sem léxico, não há o que verificar.
-    let mut warnings = if req.mode.wants_lexical() {
+    // (política `flag` — não altera o texto). Só com passagem + léxico.
+    let mut warnings = if req.passage.is_some() && req.mode.wants_lexical() {
         lexicon::verify(&interpretation, &req.verified_lexicon).warnings
     } else {
         Vec::new()
@@ -279,6 +322,87 @@ pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResu
     })
 }
 
+/// Parser tolerante de uma rodada: `PERGUNTA: …` (ou a 1ª linha não-opção) vira a
+/// pergunta; linhas `- …`/`* …` viram opções (deduplicadas, sem vazias).
+pub fn parse_refinement(raw: &str) -> Refinement {
+    let mut question = String::new();
+    let mut options: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Some(q) = t
+            .strip_prefix("PERGUNTA:")
+            .or_else(|| t.strip_prefix("Pergunta:"))
+        {
+            question = q.trim().to_string();
+        } else if let Some(o) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+            let o = o.trim();
+            if !o.is_empty() && !options.iter().any(|x| x == o) {
+                options.push(o.to_string());
+            }
+        } else if question.is_empty() {
+            question = t.to_string();
+        }
+    }
+    Refinement { question, options }
+}
+
+fn refine_system_prompt(mode: StudyMode, lang: Lang, round: u8) -> String {
+    let last = if round >= 3 {
+        " Esta é a ÚLTIMA rodada: faça as opções convergirem para uma PASSAGEM concreta \
+         (ex.: \"Efésios 2.8-9\") ou \"estudo temático\"."
+    } else {
+        ""
+    };
+    let idioma = match lang {
+        Lang::Pt => "Escreva em português.",
+        Lang::En => "Write in English.",
+    };
+    format!(
+        "Você ajuda a delimitar o ESCOPO de um estudo bíblico ({modo}). Proponha UMA pergunta \
+         curta para refinar o escopo e de 3 a 4 opções de resposta.{last} Responda EXATAMENTE \
+         neste formato, sem nada além disso:\n\
+         PERGUNTA: <pergunta>\n- <opção 1>\n- <opção 2>\n- <opção 3>\n{idioma}",
+        modo = mode.name_pt(),
+        last = last,
+        idioma = idioma,
+    )
+}
+
+fn refine_user_prompt(brief: &str, prior: &[(String, String)], round: u8) -> String {
+    let history = if prior.is_empty() {
+        "(nenhuma)".to_string()
+    } else {
+        prior
+            .iter()
+            .map(|(q, a)| format!("- {q} → {a}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "ASSUNTO DO ESTUDO: {brief}\n\nRESPOSTAS ANTERIORES:\n{history}\n\n\
+         Proponha a próxima pergunta de refinamento (rodada {round} de 3).",
+    )
+}
+
+/// Pede ao modelo UMA rodada de refinamento de escopo: uma pergunta + opções,
+/// dado o assunto (`brief`) e as respostas anteriores. `round` em 1..=3.
+pub fn refine_scope(
+    provider: &dyn LlmProvider,
+    mode: StudyMode,
+    lang: Lang,
+    brief: &str,
+    prior: &[(String, String)],
+    round: u8,
+) -> Result<Refinement> {
+    let system = refine_system_prompt(mode, lang, round);
+    let user = refine_user_prompt(brief, prior, round);
+    let raw = provider.complete(&system, &user)?;
+    Ok(parse_refinement(&raw))
+}
+
 impl StudyResult {
     /// Renderiza o estudo em Markdown (texto citado + interpretação + aviso).
     ///
@@ -286,14 +410,20 @@ impl StudyResult {
     /// histórico, byte a byte** — contrato preservado pelos testes existentes.
     /// Com seções, renderiza a estrutura do modo (e acrescenta a linha `- Modo:`).
     pub fn to_markdown(&self) -> String {
+        // Bloco de texto citado — ausente nos estudos temáticos (sem passagem).
+        let texto_block = if self.passage_text.is_empty() {
+            String::new()
+        } else {
+            format!("## Texto citado\n\n{}\n\n", self.passage_text)
+        };
+
         if self.sections.is_empty() {
             let mut out = format!(
                 "# Estudo — {referencia}\n\n\
                  - Lente: {lente}\n\
                  - Profundidade: {prof}\n\
                  - Gerado por: {provider}/{model}\n\n\
-                 ## Texto citado\n\n{texto}\n\n\
-                 ## Interpretação ({lente})\n\n{interp}\n\n\
+                 {texto}## Interpretação ({lente})\n\n{interp}\n\n\
                  ---\n\
                  _Texto bíblico do acervo local; a interpretação é gerada por IA sob a lente \
                  {lente} e pode conter erros — confira sempre as Escrituras._\n",
@@ -302,7 +432,7 @@ impl StudyResult {
                 prof = self.depth.name_pt(),
                 provider = self.provider,
                 model = self.model,
-                texto = self.passage_text,
+                texto = texto_block,
                 interp = self.interpretation,
             );
             out.push_str(&self.warnings_block());
@@ -315,14 +445,14 @@ impl StudyResult {
              - Lente: {lente}\n\
              - Profundidade: {prof}\n\
              - Gerado por: {provider}/{model}\n\n\
-             ## Texto citado\n\n{texto}\n\n",
+             {texto}",
             referencia = self.reference_label,
             modo = self.mode.name_pt(),
             lente = self.lens.name_pt(),
             prof = self.depth.name_pt(),
             provider = self.provider,
             model = self.model,
-            texto = self.passage_text,
+            texto = texto_block,
         );
         for s in &self.sections {
             out.push_str(&format!("## {}\n\n{}\n\n", s.heading, s.body));
@@ -381,18 +511,24 @@ impl StudyResult {
             a
         };
 
+        // Texto citado — ausente nos estudos temáticos (sem passagem única).
+        let texto_block = if self.passage_text.is_empty() {
+            String::new()
+        } else {
+            format!("## Texto (acervo local)\n\n{}\n\n", self.passage_text)
+        };
         let mut out = format!(
             "---\n\
              title: \"Estudo Exegético — {referencia}\"\n\
              author: \"The Light — {provider}/{model}\"\n\
              lang: \"{langcode}\"\n\
              ---\n\n\
-             ## Texto (acervo local)\n\n{texto}\n\n{analysis}",
+             {texto}{analysis}",
             referencia = self.reference_label,
             provider = self.provider,
             model = self.model,
             langcode = lang.code(),
-            texto = self.passage_text,
+            texto = texto_block,
             analysis = analysis,
         );
 
@@ -472,8 +608,13 @@ pub fn ask_session(
     lang: Lang,
     context: &str,
     turns: &[ChatMessage],
+    study: Option<(StudyMode, Denomination)>,
 ) -> Result<String> {
-    let system = prompts::ask_system_prompt(lang);
+    // Follow-up de um estudo usa um system prompt ciente do modo/lente.
+    let system = match study {
+        Some((mode, lens)) => prompts::study_followup_system_prompt(mode, lens, lang),
+        None => prompts::ask_system_prompt(lang),
+    };
     let mut wrapped_first = false;
     let messages: Vec<ChatMessage> = turns
         .iter()
@@ -531,10 +672,11 @@ mod tests {
             lens: Denomination::Lutheran,
             depth: StudyDepth::Exegetical,
             language: Lang::Pt,
-            passage: &p,
+            passage: Some(&p),
             cross_references: vec!["Romanos 3.24".to_string()],
             verified_lexicon: VerifiedLexicon::default(),
             web_sources: vec![],
+            brief: None,
         };
         // Resposta sem cabeçalhos `## ` → caminho histórico (compatibilidade).
         let provider = MockLlmProvider::new("A salvação é dom de Deus (v.8).");
@@ -573,10 +715,11 @@ mod tests {
             lens: Denomination::Presbyterian,
             depth: StudyDepth::Exegetical,
             language: Lang::Pt,
-            passage: &p,
+            passage: Some(&p),
             cross_references: vec![],
             verified_lexicon: VerifiedLexicon::default(),
             web_sources: vec![],
+            brief: None,
         };
         let provider = MockLlmProvider::new(
             "## Texto e tradução\nO texto fala da graça.\n\n## Síntese teológica\nA fé é dom.",
@@ -617,10 +760,11 @@ mod tests {
             lens: Denomination::Presbyterian,
             depth: StudyDepth::Exegetical,
             language: Lang::Pt,
-            passage: &p,
+            passage: Some(&p),
             cross_references: vec![],
             verified_lexicon: vl,
             web_sources: vec![],
+            brief: None,
         };
 
         // Echo devolve o user_prompt: o bloco léxico é injetado no modo acadêmico.
@@ -662,10 +806,11 @@ mod tests {
             lens: Denomination::Presbyterian,
             depth: StudyDepth::Exegetical,
             language: Lang::Pt,
-            passage: &p,
+            passage: Some(&p),
             cross_references: vec![],
             verified_lexicon: vl,
             web_sources: vec![],
+            brief: None,
         };
         let provider = MockLlmProvider::new("## Análise lexical\nO termo [V:H7225] abre o relato.");
         let r = study(&provider, &req).unwrap();
@@ -695,10 +840,11 @@ mod tests {
                 lens: Denomination::Presbyterian,
                 depth: StudyDepth::Exegetical,
                 language: Lang::Pt,
-                passage: &p,
+                passage: Some(&p),
                 cross_references: vec![],
                 verified_lexicon: VerifiedLexicon::default(),
                 web_sources: web.clone(),
+                brief: None,
             };
             study(prov, &req).unwrap()
         };
@@ -724,6 +870,50 @@ mod tests {
         assert!(md.contains("Ver [^W1] e também"), "{md}");
         // Trecho verbatim aparece na nota da fonte web.
         assert!(md.contains("unmerited favor"));
+    }
+
+    #[test]
+    fn topical_study_has_no_cited_text_block_and_injects_brief() {
+        // Estudo temático: passagem None → sem "Texto citado"; o brief entra no prompt.
+        let p = passage();
+        let req = StudyRequest {
+            reference: p.reference,
+            reference_label: "a graça em Paulo".to_string(),
+            mode: StudyMode::Introductory,
+            lens: Denomination::Presbyterian,
+            depth: StudyDepth::Overview,
+            language: Lang::Pt,
+            passage: None,
+            cross_references: vec![],
+            verified_lexicon: VerifiedLexicon::default(),
+            web_sources: vec![],
+            brief: Some("a graça em Paulo".to_string()),
+        };
+        // Echo devolve o user_prompt → confirma TEMÁTICO + FOCO.
+        let echoed = study(&EchoProvider, &req).unwrap();
+        assert!(echoed.interpretation.contains("TEMÁTICO"));
+        assert!(echoed.interpretation.contains("FOCO DO ESTUDO"));
+        assert!(echoed.passage_text.is_empty());
+
+        // Com seções, o Markdown NÃO inclui "## Texto citado".
+        let provider = MockLlmProvider::new("## Ideia principal\nA graça é dom.");
+        let r = study(&provider, &req).unwrap();
+        let md = r.to_markdown();
+        assert!(!md.contains("## Texto citado"), "{md}");
+        assert!(md.contains("## Ideia principal"));
+    }
+
+    #[test]
+    fn parse_refinement_reads_question_and_options() {
+        let raw = "PERGUNTA: Qual o foco?\n- exegese de uma passagem\n- tema geral\n- estudo de palavra\n- estudo de palavra";
+        let r = parse_refinement(raw);
+        assert_eq!(r.question, "Qual o foco?");
+        assert_eq!(r.options.len(), 3, "dedup: {:?}", r.options); // duplicata removida
+        assert_eq!(r.options[0], "exegese de uma passagem");
+        // Sem cabeçalho PERGUNTA: a 1ª linha não-opção vira a pergunta.
+        let r2 = parse_refinement("Escolha o ângulo\n* histórico\n* teológico");
+        assert_eq!(r2.question, "Escolha o ângulo");
+        assert_eq!(r2.options, vec!["histórico", "teológico"]);
     }
 
     #[test]
@@ -814,7 +1004,7 @@ mod tests {
     #[test]
     fn ask_session_wraps_context_only_in_first_user_turn() {
         let turns = [user("q1"), assistant("a1"), user("q2")];
-        let out = ask_session(&EchoProvider, Lang::Pt, "CTX-UNICO", &turns).unwrap();
+        let out = ask_session(&EchoProvider, Lang::Pt, "CTX-UNICO", &turns, None).unwrap();
         // O contexto aparece uma única vez (só no 1º turno de usuário).
         assert_eq!(out.matches("CTX-UNICO").count(), 1, "{out}");
         assert_eq!(out.matches("CONTEXTO").count(), 1, "{out}");
