@@ -1,160 +1,333 @@
-# The Light
+<div align="center">
 
-> Leitor de Bíblia hackeável para terminal, com estudo exegético assistido por IA
-> (lente denominacional configurável), dados locais e modelo *bring-your-own-key*.
+# ✦ The Light
 
-Status: **`v1.0.0`** — leitura/busca (Fase 1), estudo pessoal offline (Fase 2),
-TUI (Fase 3), planos de leitura (Fase 4), estudo por IA opt-in/BYOK (Fase 5) e
-conectores de versões protegidas (Fase 6). Veja [`SPEC.md`](SPEC.md) para a visão
-e [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) para o roadmap.
+**A hackable, offline-first Bible reader for your terminal — with an opt-in, bring-your-own-key AI study layer that's grounded in real scholarship, not hallucinations.**
 
-## Instalação
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![CI](https://github.com/butkeraites/the-light/actions/workflows/ci.yml/badge.svg)](https://github.com/butkeraites/the-light/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/butkeraites/the-light?sort=semver)](https://github.com/butkeraites/the-light/releases)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-informational)
+![Bible text: PT · EN](https://img.shields.io/badge/Bible%20text-PT%20%C2%B7%20EN-success)
 
-```sh
-# Binário pré-compilado (recomendado) — baixe o da sua plataforma em:
-#   https://github.com/butkeraites/the-light/releases
-# (cada arquivo vem com um `.sha256` para conferência).
+</div>
 
-# Ou Homebrew (macOS/Linux), quando o tap estiver publicado:
-brew install butkeraites/tap/light
+---
 
-# Ou compilando com cargo, direto do repositório (instala o binário `light`):
-cargo install --git https://github.com/butkeraites/the-light the-light-cli
+The Light is a single, fast binary that turns your terminal into a serious Bible study workspace. Read and search the Scriptures completely **offline**. Keep your notes and highlights as **plain, git-versionable files** you actually own. And when — and only when — you want it, switch on an AI study layer that does deep exegesis through a **denominational lens you choose**, citing verified Greek and Hebrew, and telling you plainly what is verifiable versus what the model wrote.
 
-# Ou de um clone local:
-cargo install --path crates/the-light-cli
+No account. No server. No telemetry. Your keys, your data, your machine.
+
+```
+┌ ✦ The Light ───────────────────────────────────────  John · KJV ─┐
+│ Genesis      │ 16  For God so loved the world,    │ Study ▸ Ef 2  │
+│ Exodus       │     that he gave his only          │ Mode  Academic│
+│  …           │     begotten Son, that whosoever   │ Lens  Presbyt.│
+│ Luke         │     believeth in him should not    │ Depth Exeget. │
+│ John       ◀ │     perish, but have everlasting   │───────────────│
+│ Acts         │     life.                          │ [a] ask       │
+│ Romans       │ 17  For God sent not his Son into  │ [+] deepen    │
+│  …           │     the world to condemn the world │ [e] export    │
+│ Revelation   │     but that the world through him │ [L] cycle lens│
+└──────────────┴────────────────────────────────────┴───────────────┘
+ ? help  · / search  · g go  · x refs  · v version  · t theme  · q quit
 ```
 
-> **Distribuição:** v1.0.0 sai via binários (GitHub Releases), Homebrew e
-> `cargo install --git`/`--path` — as crates **não** são publicadas no crates.io
-> (ver `DECISIONS.md`, ADR-0011). Requer apenas o binário: SQLite vem embutido e
-> o TLS é `rustls` (sem OpenSSL de sistema). Gere o banco de versões livres uma
-> vez (passo 1 abaixo). MSRV: Rust **1.85**.
+---
 
-## Uso rápido
+## Why The Light?
+
+Today's Bible tooling forces a choice between three worlds that never talk to each other:
+
+| Category | Examples | The limitation |
+|---|---|---|
+| **Reading CLIs / TUIs** | `bible-tui`, `bible-cli`, `pybible-cli` | They only *read*. No study layer, no theological perspective, limited notes. |
+| **Text APIs** | API.Bible, Free Use Bible API | They're data sources, not a study product — you still have to build everything. |
+| **AI / study apps** | Closed web & mobile apps | No terminal, no local data, no real BYOK — your study lives on someone else's server. |
+
+**No tool combines all three:** native-terminal reading **+** explicit denominational exegesis **+** bring-your-own-key AI over **local, open data**. That intersection is exactly where The Light lives.
+
+> *"A hackable terminal Bible reader, with an optional AI layer and a configurable theological lens, that respects licenses and runs on the user's own keys."*
+
+---
+
+## Highlights
+
+- 📖 **100% offline core** — reading, search, notes, highlights, cross-references and reading plans need zero network and zero AI.
+- 🌍 **Bilingual PT/EN** — natural reference parsing for both (`John 3:16`, `Jo 3.16`, `Gn 1.1-3`), multiple versions side by side.
+- 🧠 **AI study that's grounded & cited** — exact verse text always comes from the local store; original-language data is injected as *constraints*, and fabricated citations are stripped automatically.
+- 🎓 **4 study modes × 6 denominational lenses × 3 depths** — Academic / Devotional / Introductory / Sermon, through a Baptist, Presbyterian, Lutheran, Pentecostal, Catholic or Orthodox lens.
+- 🔡 **Verified Greek & Hebrew** — STEPBible original-language tokens with Strong's numbers and brief lexicons, joined per verse.
+- 🔗 **~344,000 cross-references** — OpenBible.info (Treasury of Scripture Knowledge), vote-ranked.
+- 📝 **Academic export** — SBL footnotes + bibliography to Markdown, and on to PDF/DOCX via Pandoc, with a machine-readable citations sidecar.
+- 🗓 **Reading plans** — annual / NT / gospels, with progress tracking and `.ics` calendar export.
+- 🖱 **A real TUI** — clickable, mouse-selectable, copy-with-citation, themeable (dark / light / no-color).
+- 🔒 **Zero telemetry, true BYOK** — keys live in a `secrets.toml` at mode `0600`, out of git, never logged or echoed.
+- 📦 **One static binary** — bundled SQLite, `rustls` TLS, no system OpenSSL, nothing to install around it.
+
+---
+
+## Quick start
 
 ```sh
-# 1. Gerar o banco com as versões livres (uma vez):
+# 1. Install — prebuilt binary (recommended): grab your platform's archive from
+#    https://github.com/butkeraites/the-light/releases  (each ships a .sha256)
+
+# …or build/install from source with cargo (installs the `light` binary):
+cargo install --git https://github.com/butkeraites/the-light the-light-cli
+#    or, from a local clone:
+cargo install --path crates/the-light-cli
+
+# 2. Build the local database once (free, public-domain versions):
 cargo run -p xtask -- import --version kjv,alm1911 --db data/biblia.sqlite
 
-# 2. Ler (PT ou EN, intervalos, capítulos, várias versões lado a lado):
-cargo run -p the-light-cli -- read "John 3:16" --version kjv,alm1911 --db data/biblia.sqlite
-cargo run -p the-light-cli -- read "Gn 1.1-3" --version alm1911 --db data/biblia.sqlite
-
-# 3. Buscar (acento-insensível, ranqueado, com destaque e filtro de livro):
-cargo run -p the-light-cli -- search "graça" --version alm1911 --book Romanos --db data/biblia.sqlite
-
-# 4. Configurar preferências (versões padrão, idioma, tema):
-cargo run -p the-light-cli -- config set versions kjv,alm1911
-cargo run -p the-light-cli -- config list
-
-# 5. Estudo pessoal: marcações, notas, referências cruzadas, export:
-cargo run -p the-light-cli -- highlight add "Jo 3.16" --color yellow --tag salvação
-cargo run -p the-light-cli -- note add "Jo 3.16" "Versículo **central**."
-cargo run -p xtask -- import-xref --db data/biblia.sqlite   # referências cruzadas (TSK)
-cargo run -p the-light-cli -- xref "Rm 3.23" --db data/biblia.sqlite
-cargo run -p the-light-cli -- export notes --format md --output notas.md
-
-# 6. Interface de terminal (TUI) completa:
-cargo run -p the-light-cli -- tui --db data/biblia.sqlite
-#   ↑↓ versículo · n/p capítulo · v versão · / buscar · g ir · x refs · t tema · q sair
-
-# 7. Planos de leitura (anual/NT/evangelhos) com progresso e calendário:
-cargo run -p the-light-cli -- plan start annual --year 2026
-cargo run -p the-light-cli -- plan today
-cargo run -p the-light-cli -- plan ics --output plano.ics   # importável no calendário
-
-# 8. Estudo com IA (opt-in, BYOK — sua própria chave, fora do git):
-cargo run -p the-light-cli -- config set provider anthropic
-cargo run -p the-light-cli -- config set-key anthropic sk-ant-...   # grava em secrets.toml (0600)
-cargo run -p the-light-cli -- study "Ef 2.8-9" --lens presbiteriana --depth exegetico --db data/biblia.sqlite
-cargo run -p the-light-cli -- study "Ef 2.8-9" --lens batista,luterana --db data/biblia.sqlite  # compara lentes
-cargo run -p the-light-cli -- ask "Como Paulo define a graça?" --ref "Rm 3" --db data/biblia.sqlite
-cargo run -p the-light-cli -- study "Jo 1.1" --lens batista --provider mock   # demonstração sem rede/chave
-
-# 9. Versões protegidas (opt-in, lidas ao vivo com a SUA chave — nunca embarcadas):
-cargo run -p the-light-cli -- config connector add ara --kind apibible --bible-id <bibleId> --name "Almeida Revista e Atualizada" --abbrev ARA --lang pt
-cargo run -p the-light-cli -- config set-key apibible <chave-api.bible>
-cargo run -p the-light-cli -- read "Jo 3.16" --version kjv,ara --db data/biblia.sqlite   # livre + protegida lado a lado
-cargo run -p the-light-cli -- config connector add esv --kind esv --name "English Standard Version" --abbrev ESV --lang en
-cargo run -p the-light-cli -- config set-key esv <chave-esv>
-cargo run -p the-light-cli -- read "John 3:16" --version esv --db data/biblia.sqlite
+# 3. Read, search, and open the full terminal UI:
+light read "John 3:16" --version kjv,alm1911
+light search "grace" --book Romans
+light tui
 ```
 
-> Versões protegidas (ARA/NVI/ESV/…) **nunca são embarcadas nem cacheadas em
-> massa**: são buscadas ao vivo via conector (API.Bible/ESV) sob a credencial do
-> próprio usuário, que aceita os termos da API. Sem chave → indisponível com
-> mensagem clara (sem chamada de rede). Ver `DATA_SOURCES.md` §4.
+> **Requirements:** Rust **1.85+** to build (MSRV). SQLite is bundled and TLS is `rustls`, so there's no system OpenSSL dependency. Colors disable automatically in pipes, with `--plain`, `NO_COLOR`, or `theme = none`.
 
-> Dados do usuário (notas `.md`, `highlights.json`, estudos `.md`) vivem em
-> arquivos abertos e versionáveis sob o diretório de dados do SO (ou `LIGHT_DATA_DIR`).
+---
 
-> A IA é **opt-in e BYOK**: provedores `anthropic`/`openai`/`ollama` (local). A
-> chave fica num `secrets.toml` (`0600`, fora do git, ou `LIGHT_SECRETS`), nunca
-> é ecoada. O estudo separa o **texto citado** (do acervo local, exato) da
-> **interpretação** (do modelo); prompts de lente são editáveis em `prompts/<lente>.md`.
+## Features
 
-> Cores ANSI aparecem em terminal; desligam automaticamente em pipes, com
-> `--plain`, `NO_COLOR` ou `theme = none`.
+### 📖 Read & search
 
-## Princípios
+Reference parsing understands both Portuguese and English, single verses, ranges, whole chapters, and multiple references at once — and renders any number of versions side by side:
 
-1. **Offline-first** — o essencial funciona sem internet e sem IA.
-2. **Bring-your-own-key (BYOK)** — a IA é opcional; o usuário paga seu próprio uso.
-3. **Dados do usuário são do usuário** — notas/marcações em arquivos abertos, versionáveis.
-4. **Licença em primeiro lugar** — só embarcamos versões livres (domínio público).
-5. **Hackeável** — config em texto, fontes plugáveis, prompts editáveis.
+```sh
+light read "Gn 1.1-3" --version alm1911
+light read "John 3:16" --version kjv,alm1911     # two columns, aligned
+```
 
-## Privacidade & rede
+Full-text search is **accent-insensitive**, **BM25-ranked**, highlighted in the terminal, and filterable by book — powered by SQLite FTS5:
 
-**Telemetria zero.** O `light` não coleta, envia nem registra nada por padrão.
-A única vez que ele faz rede é quando **você** pede explicitamente: um estudo/
-pergunta de IA (vai só ao provedor que você escolheu) ou a leitura de uma versão
-protegida via conector (vai só à API que você configurou, com a sua chave). Todo
-o resto — leitura, busca, notas, planos — é 100% local. As chaves ficam num
-`secrets.toml` (`0600`, fora do git) e nunca são logadas nem ecoadas.
+```sh
+light search "graça" --version alm1911 --book Romanos
+```
 
-## Prompts editáveis (lentes denominacionais)
+### 📝 Personal study, in plain files
 
-Os prompts de cada lente são embutidos, mas você pode sobrescrevê-los criando
-`prompts/<lente>.md` no diretório de config (ou em `LIGHT_PROMPTS`). Veja
-[`docs/PROMPTS.md`](docs/PROMPTS.md) para o passo a passo e os slugs das lentes.
+Everything you create is yours, in open formats you can read, grep, and version with git — under your OS data directory (or `LIGHT_DATA_DIR`):
 
-## Estrutura do workspace
+```sh
+light highlight add "Jo 3.16" --color yellow --tag salvação
+light note add "Jo 3.16" "The **central** verse."
+light xref "Rm 3.23"                              # cross-references (OpenBible)
+light plan start annual --year 2026               # reading plan with progress
+light plan ics --output plan.ics                  # import into any calendar
+light export notes --format md --output notes.md  # → Markdown (or PDF via pandoc)
+```
+
+Notes are Markdown (one file each), highlights are JSON, plans track your daily progress — no proprietary database, no lock-in.
+
+> Cross-references are a one-time import: `cargo run -p xtask -- import-xref --db data/biblia.sqlite`.
+
+### 🖱 The terminal UI
+
+`light tui` opens a responsive, mouse-aware interface: a books sidebar, a numbered-verse reader, and a study/AI panel. **Click** to navigate books, verses, and menus; **drag** to select text in the reader and copy it **with its citation** attached. The layout degrades gracefully on narrow terminals, and `t` cycles dark → light → no-color (which uses bold/reverse/underline for maximum terminal compatibility).
+
+```
+  Ask · Ef 2.8-9 · Academic / Presbyterian ─────────────────────────┐
+  ▸ Round 2 of 3 — narrow your focus:                                │
+                                                                     │
+    What do you want to go deeper on?                                │
+     1  The meaning of "grace" (χάρις) in context                    │
+     2  Faith vs. works — the structure of the argument             │
+     3  How this passage reads under covenant theology              │
+     4  Write my own focus…                                          │
+                                                                     │
+   ↑↓ choose · 1-9 quick-pick · c custom · Esc cancel                │
+  ───────────────────────────────────────────────────────────────────┘
+```
+
+**Key bindings (global):**
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| `?` | Help overlay | `a` | Ask AI / continue chat |
+| `Tab` | Switch focus (books ⇄ reader) | `s` | Saved sessions & studies |
+| `/` | Full-text search | `m` | Study mode & lens picker |
+| `g` | Go to reference | `d` | Install scholarly data |
+| `v` | Cycle version | `c` | AI provider / key settings |
+| `x` | Cross-references | `t` | Cycle theme |
+| `n` / `p` | Next / previous chapter | `q` | Quit |
+
+Inside an active study: `a` follow-up question · `+` deepen (Overview → Exegetical → Word study) · `e` export · `L` cycle lens.
+
+### 🧠 AI study — opt-in, BYOK
+
+The AI layer is entirely optional and never runs unless you turn it on with your own key. Providers: **Anthropic**, **OpenAI**, **Ollama** (local, no key) — plus a `mock` provider for offline demos.
+
+```sh
+light config set provider anthropic
+light config set-key anthropic sk-ant-...          # → secrets.toml (0600), out of git
+
+# Deep exegetical study through a chosen lens:
+light study "Ef 2.8-9" --lens presbiteriana --depth exegetico
+
+# Compare two traditions side by side:
+light study "Ef 2.8-9" --lens batista,luterana
+
+# A free-form question, anchored to a passage (lightweight RAG):
+light ask "How does Paul define grace?" --ref "Rm 3"
+
+# No key? Try the offline demo provider:
+light study "Jo 1.1" --lens batista --provider mock
+```
+
+A study composes three independent dimensions:
+
+- **Mode** — `Academic` (rigorous, with apparatus) · `Devotional` · `Introductory` · `Sermon` (homiletic outline).
+- **Lens** — `Baptist` · `Presbyterian` · `Lutheran` · `Pentecostal` · `Catholic` · `Orthodox`. Each lens's full hermeneutical framework is described to the model, so it *applies* the tradition rather than guessing it.
+- **Depth** — `Overview` · `Exegetical` · `WordStudy` (original languages).
+
+To ground studies in the original languages, import the scholarly data once: `cargo run -p xtask -- import-scholarly --db data/biblia.sqlite` (or press `d` in the TUI). In the TUI, studies start with a **3-round scope-refinement wizard** that narrows what you actually want to study, and every conversation is saved as a **persistent, resumable multi-turn session** — so a follow-up question next week keeps the same hermeneutical voice. Lens prompts are just Markdown: drop a `prompts/<lens>.md` in your config dir to override any of them (see [`docs/PROMPTS.md`](docs/PROMPTS.md)).
+
+### ⭐ Grounded, not hallucinated
+
+This is the part that makes AI study *trustworthy* — and the reason The Light exists. Instead of asking a model to "talk about a verse," the app surrounds it with a scaffold of verified data and then **validates what comes back**:
+
+- **Exact text comes from the database, never the model.** Cited verses are pulled from the local store, numbered, and clearly separated from interpretation.
+- **Original languages are injected as constraints.** For Academic and Sermon modes, the verified Greek/Hebrew lexicon for the passage (STEPBible Strong's data) is placed in the prompt with explicit anchors like `[V:G5485]` and the instruction to use *only* those numbers and senses — and to declare absence when there's no data, rather than invent.
+- **Citations are validated deterministically.** After generation, the app scans for `[V:…]` (lexicon) and `[W:…]` (web) anchors, rewrites the valid ones into proper footnotes, and **silently strips any fabricated or out-of-range citation** — the model cannot smuggle in a Strong's number or a source that doesn't exist.
+- **Web research is pre-fetched and opt-in.** With `--research`, the app fetches real snippets (Wikipedia keyless, or Tavily with your key) *before* the model sees them, shows you the query that leaves your machine, and logs it — so URLs can be cited but never invented.
+- **A provenance footer separates the three layers** of every academic study: what is **verifiable** (local text + STEPBible data), what was **retrieved from the web** (with snippet and access date), and what was **generated by AI** (named provider/model, "may contain errors — always verify").
+
+```
+Ephesians 2.8-9 — Exegetical Study (Presbyterian)
+
+  8  For by grace are ye saved through faith; and that not of
+     yourselves: it is the gift of God:
+  9  Not of works, lest any man should boast.
+
+  Lexical analysis
+  The noun rendered "grace" is χάρις (cháris)[^G5485], denoting
+  unmerited favor freely given …
+
+  ── Notes ───────────────────────────────────────────────────
+  [^G5485]  STEP Bible, Translators Brief lexicon of Extended
+            Strongs for Greek (TBESG), s.v. "cháris (G5485)."
+
+  ── Provenance ──────────────────────────────────────────────
+  Verifiable   Bible text (local); lexical data © STEP Bible (CC BY 4.0)
+  AI-generated Analysis by anthropic/claude-opus-4-8 under the
+               Presbyterian lens — may contain errors; always verify.
+```
+
+### 🎓 Academic export
+
+`--academic` prints a scholarly paper (SBL-style footnotes + bibliography); `--export paper.md|.pdf|.docx` writes it out (PDF/DOCX via Pandoc, with YAML front-matter). `--save` keeps the study in `studies/` alongside a round-trippable `.citations.json` sidecar.
+
+```sh
+light study "Ef 2.8-9" --lens presbiteriana --academic --export study.pdf
+```
+
+### 🔌 Protected versions via connectors
+
+Copyrighted versions (ARA, NVI, ESV, …) are **never embedded or bulk-cached**. You connect an API with **your own credentials**, and they're fetched live, on demand:
+
+```sh
+light config connector add ara --kind apibible --bible-id <id> --abbrev ARA --lang pt
+light config set-key apibible <your-api.bible-key>
+light read "Jo 3.16" --version kjv,ara          # free + protected, side by side
+```
+
+No key → the version is simply unavailable, with a clear message and **no network call**.
+
+---
+
+## Privacy & security
+
+**Zero telemetry.** `light` never collects, sends, or logs anything by default. The *only* time it touches the network is when **you** explicitly ask: an AI study/question (goes solely to the provider you chose) or reading a protected version (goes solely to the API you configured, with your key). Everything else — reading, search, notes, plans — is 100% local. Keys live in `secrets.toml` (`0600`, out of git, or `LIGHT_SECRETS`) and are never logged or echoed.
+
+---
+
+## Architecture
+
+A small, well-factored Rust 2021 workspace:
 
 ```
 crates/
-  the-light-core/   # lógica pura: modelo, parser de referências, store SQLite, fontes
-  the-light-cli/    # binário `light` (clap)
-  the-light-tui/    # interface ratatui (Fase 3)
-xtask/           # tarefas de import de datasets livres (cargo run -p xtask)
-data/            # datasets brutos (livres) — ver DATA_SOURCES.md
+  the-light-core/   # pure logic: model, reference parsing, SQLite store,
+                    # sources, the AI layer, and user data
+  the-light-cli/    # the `light` binary (clap) — 11 subcommands
+  the-light-tui/    # the ratatui terminal interface
+xtask/              # dataset import tasks (cargo run -p xtask)
+data/               # raw open datasets — see DATA_SOURCES.md
 ```
 
-## Desenvolvimento
+Bundled SQLite (`rusqlite`), `rustls` TLS (no OpenSSL), blocking HTTP via `reqwest`, and ~370 tests run in CI across Linux, macOS, and Windows — with a dedicated MSRV check.
 
-Requer Rust estável (instale via [rustup](https://rustup.rs)).
+---
+
+## Data & licensing
+
+The Light only embeds texts that are **public domain or CC-BY**; copyrighted versions are reached exclusively through user-credentialed connectors (see [`DATA_SOURCES.md`](DATA_SOURCES.md)).
+
+| Data | License | Notes |
+|---|---|---|
+| **King James Version (1769)** | Public domain | ~31,102 verses (EN) |
+| **Almeida 1911** | Public domain | ~31,101 verses (PT) |
+| **STEPBible** — TAHOT/TAGNT tokens, TBESH/TBESG lexicons | CC BY 4.0 | Original-language data + Strong's |
+| **OpenBible.info** cross-references | CC-BY | ~344,799 references |
+
+**Required attributions:**
+
+> Cross references courtesy of [OpenBible.info](https://www.openbible.info/labs/cross-references/) (CC-BY).
+
+> Credit it to 'STEP Bible' linked to [www.STEPBible.org](https://www.STEPBible.org) (data based on work at Tyndale House, Cambridge; CC BY 4.0).
+
+---
+
+## Project status
+
+The Light is at **v1.2.0**. Shipped and working today:
+
+- ✅ Reading & search (offline, bilingual, multi-version)
+- ✅ Personal study — highlights, notes, cross-references, export
+- ✅ Full ratatui TUI — clickable, mouse-selectable, themeable
+- ✅ Reading plans with progress + `.ics` export
+- ✅ Opt-in BYOK AI study — modes, lenses, depths, grounding, academic export
+- ✅ Protected-version connectors (API.Bible, ESV)
+
+*Planned:* a published Homebrew tap (`brew install butkeraites/tap/light`).
+
+---
+
+## Development
+
+Requires stable Rust (install via [rustup](https://rustup.rs)).
 
 ```sh
-cargo build                       # compila o workspace
-cargo test                        # roda os testes
-cargo clippy -- -D warnings       # lint (sem warnings)
-cargo fmt --check                 # formatação
+cargo build                     # build the workspace
+cargo test                      # run the test suite (~370 tests)
+cargo clippy -- -D warnings     # lint (no warnings)
+cargo fmt --check               # formatting
 ```
 
-## Documentos do projeto
+Project docs: [`SPEC.md`](SPEC.md) (vision & architecture) · [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) (roadmap) · [`DATA_SOURCES.md`](DATA_SOURCES.md) (provenance) · [`DECISIONS.md`](DECISIONS.md) (ADRs).
 
-- [`SPEC.md`](SPEC.md) — visão, arquitetura, decisões de design.
-- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — roadmap por fases/tarefas.
-- [`DATA_SOURCES.md`](DATA_SOURCES.md) — proveniência e licença de cada dataset.
-- [`DECISIONS.md`](DECISIONS.md) — registros de decisão (ADRs curtos).
-- [`PROGRESS.md`](PROGRESS.md) — log de execução tarefa a tarefa.
+---
 
-## Licença
+## License
 
-Código sob **`MIT OR Apache-2.0`** (à sua escolha) — ver [`LICENSE-MIT`](LICENSE-MIT)
-e [`LICENSE-APACHE`](LICENSE-APACHE). Os dados bíblicos seguem suas próprias
-licenças (ver [`DATA_SOURCES.md`](DATA_SOURCES.md)): apenas versões de domínio
-público / livres são embarcadas; versões protegidas só via conector com a
-credencial do usuário. As referências cruzadas são cortesia da **OpenBible.info
-(CC-BY)**.
+Code is dual-licensed under **MIT OR Apache-2.0** — your choice. See [`LICENSE-MIT`](LICENSE-MIT) and [`LICENSE-APACHE`](LICENSE-APACHE). Bundled Bible data follows its own licenses ([`DATA_SOURCES.md`](DATA_SOURCES.md)): only public-domain / free versions are embedded; protected versions are reached only via connectors with the user's own credentials.
+
+---
+
+## Acknowledgements
+
+- **[STEP Bible](https://www.STEPBible.org)** & **Tyndale House, Cambridge** — original-language tokens and lexicons (CC BY 4.0).
+- **[OpenBible.info](https://www.openbible.info/labs/cross-references/)** — the cross-reference dataset (CC-BY).
+- The public-domain text projects (scrollmapper, damarals) that make the KJV and Almeida 1911 freely available.
+- **[ratatui](https://ratatui.rs)** — the terminal UI framework behind the experience.
+
+<div align="center">
+
+*Built in Rust. Offline by default. Yours by design.* ✦
+
+</div>
