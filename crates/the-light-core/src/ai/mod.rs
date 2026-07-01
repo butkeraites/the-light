@@ -27,7 +27,7 @@ pub use study::{
 use std::str::FromStr;
 
 /// Provedores de IA suportados (nomes válidos para `config set provider`).
-pub const PROVIDERS: &[&str] = &["anthropic", "openai", "ollama"];
+pub const PROVIDERS: &[&str] = &["anthropic", "openai", "ollama", "gemini"];
 
 /// Lente denominacional aplicada ao estudo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -260,7 +260,7 @@ pub enum AiError {
     #[error("nenhum provedor de IA selecionado — use `light config set provider <nome>`")]
     NoProvider,
     /// Provedor desconhecido.
-    #[error("provedor desconhecido: `{0}` (use: anthropic, openai, ollama)")]
+    #[error("provedor desconhecido: `{0}` (use: anthropic, openai, ollama, gemini)")]
     UnknownProvider(String),
     /// Lente denominacional desconhecida.
     #[error("lente desconhecida: `{0}`")]
@@ -333,6 +333,25 @@ pub trait LlmProvider {
 
     /// Envia `system` + `user` e devolve a resposta de texto.
     fn complete(&self, system: &str, user: &str) -> Result<String>;
+
+    /// Envia `system` + `user` e transmite a resposta em incrementos via
+    /// `on_token`, devolvendo também a resposta completa ao final.
+    ///
+    /// A implementação **padrão é não-quebrante**: chama [`LlmProvider::complete`]
+    /// e emite a resposta inteira **uma única vez** por `on_token`. Assim todos os
+    /// provedores existentes (e o `mock`) continuam válidos sem alteração. Um
+    /// provedor de rede pode sobrescrever com streaming real (SSE) sem mudar os
+    /// chamadores; a assinatura callback é compatível com UniFFI/JSI na fronteira.
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        let full = self.complete(system, user)?;
+        on_token(&full);
+        Ok(full)
+    }
 
     /// Conversa multi-turno: `system` + histórico de mensagens. A implementação
     /// padrão dobra o histórico num transcript e chama [`LlmProvider::complete`]
@@ -492,5 +511,26 @@ mod tests {
         assert_eq!(m.name(), "mock");
         assert_eq!(m.complete("sys", "user").unwrap(), "ola");
         assert!(m.estimate_tokens("abcdefgh") >= 2);
+    }
+
+    #[test]
+    fn complete_stream_default_emits_full_once() {
+        // O default não-quebrante emite a resposta inteira exatamente 1×.
+        let m = MockLlmProvider::new("resposta fixa");
+        let mut chunks: Vec<String> = Vec::new();
+        let out = m
+            .complete_stream("sys", "user", &mut |t| chunks.push(t.to_string()))
+            .unwrap();
+        assert_eq!(out, "resposta fixa");
+        assert_eq!(chunks, vec!["resposta fixa".to_string()]);
+    }
+
+    #[test]
+    fn gemini_is_registered_in_providers() {
+        assert!(PROVIDERS.contains(&"gemini"));
+        // Sem regressão: os provedores existentes seguem listados.
+        for p in ["anthropic", "openai", "ollama"] {
+            assert!(PROVIDERS.contains(&p), "{p}");
+        }
     }
 }

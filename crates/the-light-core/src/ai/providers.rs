@@ -1,15 +1,15 @@
-//! Provedores concretos de LLM (BYOK): Anthropic, OpenAI e Ollama.
+//! Provedores concretos de LLM (BYOK): Anthropic, OpenAI, Ollama e Gemini.
 //!
-//! O Rust não tem SDK oficial da Anthropic, então usamos HTTP direto (reqwest
-//! *blocking*). Os corpos de requisição e o parsing das respostas são funções
-//! puras (testáveis sem rede); só `complete()` faz I/O. Os testes nunca chamam
-//! a rede nem usam chaves reais — ver `MockLlmProvider`.
+//! O Rust não tem SDK oficial desses provedores, então usamos HTTP direto
+//! (reqwest *blocking*). Os corpos de requisição e o parsing das respostas são
+//! funções puras (testáveis sem rede); só `complete()` faz I/O. Os testes nunca
+//! chamam a rede nem usam chaves reais — ver `MockLlmProvider`.
 
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::{AiError, ChatMessage, LlmProvider, Result};
+use super::{AiError, ChatMessage, ChatRole, LlmProvider, Result};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_MAX_TOKENS: u32 = 8192;
@@ -28,6 +28,7 @@ pub fn default_model(provider: &str) -> &'static str {
         "anthropic" => "claude-opus-4-8",
         "openai" => "gpt-4o",
         "ollama" => "llama3",
+        "gemini" => "gemini-2.0-flash",
         _ => "",
     }
 }
@@ -59,6 +60,10 @@ pub fn build_provider(
                 .unwrap_or_else(|_| "http://localhost:11434".to_string());
             Ok(Box::new(OllamaProvider { host, model }))
         }
+        "gemini" => {
+            let key = key.ok_or_else(|| AiError::NoKey("gemini".into()))?;
+            Ok(Box::new(GeminiProvider { key, model }))
+        }
         other => Err(AiError::UnknownProvider(other.to_string())),
     }
 }
@@ -73,6 +78,10 @@ pub fn estimate_cost_usd(model: &str, input_tokens: usize, output_tokens: usize)
         "claude-sonnet-4-6" => (3.0, 15.0),
         "claude-haiku-4-5" => (1.0, 5.0),
         "gpt-4o" => (2.5, 10.0),
+        // Gemini 2.0 Flash (Google AI): preço público estável (o modelo default).
+        // Demais modelos gemini variam bastante → não inventamos preço (`None`).
+        "gemini-2.0-flash" | "gemini-2.0-flash-001" => (0.10, 0.40),
+        m if m.starts_with("gemini") => return None,
         m if m.starts_with("llama") => return Some(0.0), // local
         _ => return None,
     };
@@ -329,6 +338,125 @@ impl OllamaProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Gemini (Google AI)
+// ---------------------------------------------------------------------------
+
+/// Provedor Google Gemini (API `generateContent`, HTTP direto).
+///
+/// O modelo vai na **URL** (`.../models/{model}:generateContent`), não no corpo;
+/// a chave vai no header `x-goog-api-key` (nunca na URL nem em log).
+pub struct GeminiProvider {
+    key: String,
+    model: String,
+}
+
+/// Corpo `generateContent` single-turn. `system` vira `system_instruction`; o
+/// `model` não entra no corpo (vai na URL) — o parâmetro é mantido por simetria
+/// com os demais `*_body` e para deixar a assinatura auto-documentada.
+fn gemini_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
+    let _ = model;
+    json!({
+        "contents": [
+            { "role": "user", "parts": [ { "text": user } ] }
+        ],
+        "system_instruction": { "parts": [ { "text": system } ] },
+        "generationConfig": { "maxOutputTokens": max_tokens },
+    })
+}
+
+/// Corpo `generateContent` multi-turno. O papel do assistente na Gemini é
+/// `"model"` (não `"assistant"`).
+fn gemini_chat_body(model: &str, system: &str, messages: &[ChatMessage], max_tokens: u32) -> Value {
+    let _ = model;
+    let contents: Vec<Value> = messages
+        .iter()
+        .map(|m| {
+            let role = match m.role {
+                ChatRole::User => "user",
+                ChatRole::Assistant => "model",
+            };
+            json!({ "role": role, "parts": [ { "text": m.content } ] })
+        })
+        .collect();
+    json!({
+        "contents": contents,
+        "system_instruction": { "parts": [ { "text": system } ] },
+        "generationConfig": { "maxOutputTokens": max_tokens },
+    })
+}
+
+/// Extrai o texto de `candidates[0].content.parts[*].text` (concatena as partes).
+///
+/// Sem `candidates` a resposta pode ter sido **bloqueada** (segurança): tenta ler
+/// `promptFeedback.blockReason` para uma mensagem clara, senão erro genérico.
+fn gemini_extract(v: &Value) -> Result<String> {
+    let candidates = v
+        .get("candidates")
+        .and_then(Value::as_array)
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| {
+            match v
+                .pointer("/promptFeedback/blockReason")
+                .and_then(Value::as_str)
+            {
+                Some(reason) => {
+                    AiError::BadResponse(format!("resposta bloqueada pelo provedor: {reason}"))
+                }
+                None => AiError::BadResponse("sem `candidates` na resposta".into()),
+            }
+        })?;
+    let parts = candidates[0]
+        .pointer("/content/parts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AiError::BadResponse("sem `content.parts` no candidate".into()))?;
+    let text: String = parts
+        .iter()
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    if text.trim().is_empty() {
+        return Err(AiError::BadResponse("resposta de texto vazia".into()));
+    }
+    Ok(text)
+}
+
+impl LlmProvider for GeminiProvider {
+    fn name(&self) -> &str {
+        "gemini"
+    }
+    fn model(&self) -> &str {
+        &self.model
+    }
+    fn complete(&self, system: &str, user: &str) -> Result<String> {
+        self.post(gemini_body(&self.model, system, user, DEFAULT_MAX_TOKENS))
+    }
+    fn chat(&self, system: &str, messages: &[ChatMessage]) -> Result<String> {
+        self.post(gemini_chat_body(
+            &self.model,
+            system,
+            messages,
+            DEFAULT_MAX_TOKENS,
+        ))
+    }
+}
+
+impl GeminiProvider {
+    fn post(&self, body: Value) -> Result<String> {
+        // O modelo vai na URL; a chave vai no header (nunca na URL/log).
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+            self.model
+        );
+        let req = blocking_client()?
+            .post(url)
+            .header("x-goog-api-key", &self.key)
+            .header("content-type", "application/json")
+            .json(&body);
+        gemini_extract(&send_json(req)?)
+    }
+}
+
 /// Extrai uma mensagem de erro legível de respostas de erro variadas.
 fn api_error_msg(v: &Value) -> String {
     v.pointer("/error/message")
@@ -423,6 +551,85 @@ mod tests {
         assert!((c - 30.0).abs() < 1e-6);
         assert_eq!(estimate_cost_usd("llama3", 1000, 1000), Some(0.0));
         assert_eq!(estimate_cost_usd("modelo-desconhecido", 1, 1), None);
+        // Gemini Flash (default) tem preço conhecido; demais gemini → None.
+        let g = estimate_cost_usd("gemini-2.0-flash", 1_000_000, 1_000_000).unwrap();
+        assert!((g - 0.50).abs() < 1e-6, "{g}");
+        assert_eq!(estimate_cost_usd("gemini-1.5-pro", 1000, 1000), None);
+    }
+
+    #[test]
+    fn gemini_registered_in_factory_and_default_model() {
+        // Gemini exige chave (provedor de nuvem), como anthropic/openai.
+        assert!(build_provider("gemini", None, None).is_err());
+        let p = build_provider("gemini", Some("PLACEHOLDER".into()), None).unwrap();
+        assert_eq!(p.name(), "gemini");
+        assert_eq!(p.model(), "gemini-2.0-flash");
+        assert_eq!(default_model("gemini"), "gemini-2.0-flash");
+        // Modelo customizado é respeitado.
+        let p = build_provider(
+            "gemini",
+            Some("PLACEHOLDER".into()),
+            Some("gemini-1.5-pro".into()),
+        )
+        .unwrap();
+        assert_eq!(p.model(), "gemini-1.5-pro");
+    }
+
+    #[test]
+    fn gemini_body_shape() {
+        let b = gemini_body("gemini-2.0-flash", "sys", "usr", 4096);
+        // O modelo NÃO entra no corpo (vai na URL).
+        assert!(b.get("model").is_none());
+        assert_eq!(b["contents"][0]["role"], "user");
+        assert_eq!(b["contents"][0]["parts"][0]["text"], "usr");
+        assert_eq!(b["system_instruction"]["parts"][0]["text"], "sys");
+        assert_eq!(b["generationConfig"]["maxOutputTokens"], 4096);
+    }
+
+    #[test]
+    fn gemini_chat_body_maps_assistant_to_model_role() {
+        let msgs = vec![
+            ChatMessage {
+                role: ChatRole::User,
+                content: "oi".into(),
+            },
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: "olá".into(),
+            },
+        ];
+        let b = gemini_chat_body("gemini-2.0-flash", "sys", &msgs, 100);
+        assert_eq!(b["contents"][0]["role"], "user");
+        assert_eq!(b["contents"][1]["role"], "model");
+        assert_eq!(b["contents"][1]["parts"][0]["text"], "olá");
+        assert_eq!(b["system_instruction"]["parts"][0]["text"], "sys");
+    }
+
+    #[test]
+    fn gemini_extract_concats_parts() {
+        let v = json!({
+            "candidates": [
+                { "content": { "role": "model", "parts": [
+                    { "text": "Parte 1. " },
+                    { "text": "Parte 2." }
+                ] } }
+            ]
+        });
+        assert_eq!(gemini_extract(&v).unwrap(), "Parte 1. Parte 2.");
+    }
+
+    #[test]
+    fn gemini_extract_errors_without_candidates() {
+        // Sem `candidates` → erro claro.
+        let v = json!({ "usageMetadata": {} });
+        assert!(gemini_extract(&v).is_err());
+        // `candidates` vazio também → erro.
+        let empty = json!({ "candidates": [] });
+        assert!(gemini_extract(&empty).is_err());
+        // Bloqueio de segurança traz a razão na mensagem.
+        let blocked = json!({ "promptFeedback": { "blockReason": "SAFETY" } });
+        let msg = gemini_extract(&blocked).unwrap_err().to_string();
+        assert!(msg.contains("SAFETY"), "{msg}");
     }
 
     #[test]
