@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::model::Lang;
 
 use super::lexicon::VerifiedLexicon;
+// `WebSource` (pesquisa web, Fase 4) puxa `chrono` via `research` → só `embedded`.
+#[cfg(feature = "embedded")]
 use super::research::WebSource;
 
 /// Tipo de uma citação (define onde aparece e se é verificável).
@@ -163,6 +165,9 @@ impl CitationCollector {
 
     /// Adiciona citações de fontes web (chave `W1`, `W2`, … = âncora `[W:n]`).
     /// O trecho é guardado verbatim para a nota; nunca parafraseado.
+    ///
+    /// Depende de `WebSource` (Fase 4, `chrono`) → só no caminho `embedded`.
+    #[cfg(feature = "embedded")]
     pub fn from_web_results(&mut self, sources: &[WebSource]) {
         for (i, ws) in sources.iter().enumerate() {
             let mut c = Citation::empty(CitationKind::Web, format!("W{}", i + 1));

@@ -5,13 +5,27 @@
 //! funções puras (testáveis sem rede); só `complete()` faz I/O. Os testes nunca
 //! chamam a rede nem usam chaves reais — ver `MockLlmProvider`.
 
+// Sob `ai-pure` (SEM `embedded`), as helpers puras de corpo/parse (`*_body`,
+// `*_extract`, `messages_json`, `parse_api_response`, `api_error_msg`) ainda não
+// têm chamador: o transporte no wasm é via `fetch` (F2.7b), que as consumirá.
+// Silenciamos o `dead_code` esperado SÓ nesse caminho; sob `embedded` elas são
+// exercitadas pelos `impl LlmProvider` + testes, então `-D warnings` segue valendo.
+#![cfg_attr(not(feature = "embedded"), allow(dead_code))]
+
+#[cfg(feature = "embedded")]
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::{AiError, ChatMessage, ChatRole, LlmProvider, Result};
+use super::{AiError, ChatMessage, ChatRole, Result};
+// O trait e a fábrica só existem no caminho de rede (`embedded`); a superfície
+// pura (bodies/extract/custo/modelo default) não os referencia.
+#[cfg(feature = "embedded")]
+use super::LlmProvider;
 
+#[cfg(feature = "embedded")]
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+#[cfg(feature = "embedded")]
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 /// Converte o histórico de conversa no array `[{role, content}]` das APIs.
@@ -28,7 +42,8 @@ pub fn default_model(provider: &str) -> &'static str {
         "anthropic" => "claude-opus-4-8",
         "openai" => "gpt-4o",
         "ollama" => "llama3",
-        "gemini" => "gemini-2.0-flash",
+        // `gemini-2.0-flash` foi retirado (3/mar/2026); `2.5-flash` é o atual.
+        "gemini" => "gemini-2.5-flash",
         _ => "",
     }
 }
@@ -37,6 +52,11 @@ pub fn default_model(provider: &str) -> &'static str {
 ///
 /// `key` é exigida para anthropic/openai; ollama é local (chave opcional).
 /// `mock` é sempre disponível (sem rede), útil para testes/demonstração.
+///
+/// Cria provedores de **rede** (reqwest) — só no caminho `embedded`. No web
+/// (`ai-pure`/wasm) o transporte é feito via `fetch` (F2.7b); o custo/modelo e a
+/// montagem/parse do corpo vêm das funções puras deste módulo.
+#[cfg(feature = "embedded")]
 pub fn build_provider(
     name: &str,
     key: Option<String>,
@@ -78,8 +98,10 @@ pub fn estimate_cost_usd(model: &str, input_tokens: usize, output_tokens: usize)
         "claude-sonnet-4-6" => (3.0, 15.0),
         "claude-haiku-4-5" => (1.0, 5.0),
         "gpt-4o" => (2.5, 10.0),
-        // Gemini 2.0 Flash (Google AI): preço público estável (o modelo default).
-        // Demais modelos gemini variam bastante → não inventamos preço (`None`).
+        // Gemini 2.0 Flash (Google AI): preço público estável (histórico — o modelo
+        // foi retirado 3/mar/2026, mas o arm segue por compatibilidade). Os demais
+        // modelos gemini (incl. o novo default `2.5-flash`) variam → não inventamos
+        // preço (`None`), coerente com a política anti-alucinação de custo.
         "gemini-2.0-flash" | "gemini-2.0-flash-001" => (0.10, 0.40),
         m if m.starts_with("gemini") => return None,
         m if m.starts_with("llama") => return Some(0.0), // local
@@ -89,6 +111,7 @@ pub fn estimate_cost_usd(model: &str, input_tokens: usize, output_tokens: usize)
     Some(cost)
 }
 
+#[cfg(feature = "embedded")]
 fn blocking_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(HTTP_TIMEOUT)
@@ -99,6 +122,7 @@ fn blocking_client() -> Result<reqwest::blocking::Client> {
 /// Envia a requisição e lê o corpo verificando o **status HTTP antes** de exigir
 /// JSON válido — assim erros de API (não-2xx) viram um `AiError::Http` legível
 /// (mensagem da API ou corpo bruto), nunca um erro genérico de parsing.
+#[cfg(feature = "embedded")]
 fn send_json(req: reqwest::blocking::RequestBuilder) -> Result<Value> {
     let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
     let status = resp.status();
@@ -122,6 +146,7 @@ fn parse_api_response(success: bool, status: &str, body: &str) -> Result<Value> 
 // ---------------------------------------------------------------------------
 
 /// Provedor Anthropic (API de Mensagens, HTTP direto).
+#[cfg(feature = "embedded")]
 pub struct AnthropicProvider {
     key: String,
     model: String,
@@ -176,6 +201,7 @@ fn anthropic_extract(v: &Value) -> Result<String> {
     Ok(text)
 }
 
+#[cfg(feature = "embedded")]
 impl LlmProvider for AnthropicProvider {
     fn name(&self) -> &str {
         "anthropic"
@@ -193,6 +219,7 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
+#[cfg(feature = "embedded")]
 impl AnthropicProvider {
     fn post(&self, body: Value) -> Result<String> {
         let req = blocking_client()?
@@ -210,6 +237,7 @@ impl AnthropicProvider {
 // ---------------------------------------------------------------------------
 
 /// Provedor OpenAI (chat completions, HTTP direto).
+#[cfg(feature = "embedded")]
 pub struct OpenAiProvider {
     key: String,
     model: String,
@@ -243,6 +271,7 @@ fn openai_extract(v: &Value) -> Result<String> {
     Ok(text.to_string())
 }
 
+#[cfg(feature = "embedded")]
 impl LlmProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
@@ -263,6 +292,7 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
+#[cfg(feature = "embedded")]
 impl OpenAiProvider {
     fn post(&self, body: Value) -> Result<String> {
         let req = blocking_client()?
@@ -279,6 +309,7 @@ impl OpenAiProvider {
 // ---------------------------------------------------------------------------
 
 /// Provedor Ollama local (sem chave). Host via `LIGHT_OLLAMA_HOST`.
+#[cfg(feature = "embedded")]
 pub struct OllamaProvider {
     host: String,
     model: String,
@@ -312,6 +343,7 @@ fn ollama_extract(v: &Value) -> Result<String> {
     Ok(text.to_string())
 }
 
+#[cfg(feature = "embedded")]
 impl LlmProvider for OllamaProvider {
     fn name(&self) -> &str {
         "ollama"
@@ -327,6 +359,7 @@ impl LlmProvider for OllamaProvider {
     }
 }
 
+#[cfg(feature = "embedded")]
 impl OllamaProvider {
     fn post(&self, body: Value) -> Result<String> {
         let url = format!("{}/api/chat", self.host.trim_end_matches('/'));
@@ -346,6 +379,7 @@ impl OllamaProvider {
 ///
 /// O modelo vai na **URL** (`.../models/{model}:generateContent`), não no corpo;
 /// a chave vai no header `x-goog-api-key` (nunca na URL nem em log).
+#[cfg(feature = "embedded")]
 pub struct GeminiProvider {
     key: String,
     model: String,
@@ -421,6 +455,7 @@ fn gemini_extract(v: &Value) -> Result<String> {
     Ok(text)
 }
 
+#[cfg(feature = "embedded")]
 impl LlmProvider for GeminiProvider {
     fn name(&self) -> &str {
         "gemini"
@@ -441,6 +476,7 @@ impl LlmProvider for GeminiProvider {
     }
 }
 
+#[cfg(feature = "embedded")]
 impl GeminiProvider {
     fn post(&self, body: Value) -> Result<String> {
         // O modelo vai na URL; a chave vai no header (nunca na URL/log).
@@ -551,9 +587,11 @@ mod tests {
         assert!((c - 30.0).abs() < 1e-6);
         assert_eq!(estimate_cost_usd("llama3", 1000, 1000), Some(0.0));
         assert_eq!(estimate_cost_usd("modelo-desconhecido", 1, 1), None);
-        // Gemini Flash (default) tem preço conhecido; demais gemini → None.
+        // Gemini 2.0 Flash (histórico) tem preço conhecido; os demais gemini
+        // (incl. o novo default `2.5-flash`) → None (preço não inventado).
         let g = estimate_cost_usd("gemini-2.0-flash", 1_000_000, 1_000_000).unwrap();
         assert!((g - 0.50).abs() < 1e-6, "{g}");
+        assert_eq!(estimate_cost_usd("gemini-2.5-flash", 1000, 1000), None);
         assert_eq!(estimate_cost_usd("gemini-1.5-pro", 1000, 1000), None);
     }
 
@@ -563,8 +601,9 @@ mod tests {
         assert!(build_provider("gemini", None, None).is_err());
         let p = build_provider("gemini", Some("PLACEHOLDER".into()), None).unwrap();
         assert_eq!(p.name(), "gemini");
-        assert_eq!(p.model(), "gemini-2.0-flash");
-        assert_eq!(default_model("gemini"), "gemini-2.0-flash");
+        // `gemini-2.0-flash` foi retirado (3/mar/2026); o default agora é `2.5-flash`.
+        assert_eq!(p.model(), "gemini-2.5-flash");
+        assert_eq!(default_model("gemini"), "gemini-2.5-flash");
         // Modelo customizado é respeitado.
         let p = build_provider(
             "gemini",

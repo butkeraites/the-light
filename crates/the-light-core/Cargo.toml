@@ -20,7 +20,14 @@ publish = false
 # arrasta SQLite-C nem TLS e compila para `wasm32-unknown-unknown` — é o que a
 # fronteira `the-light-app` consome no alvo web (ver the-light-app ADR-0005).
 default = ["embedded"]
+# `ai-pure` = superfície **pura** da IA (montagem de prompt/RAG + `ask` ancorado +
+# citação anti-alucinação). Só depende de `serde_json` (Rust puro) → compila para
+# `wasm32-unknown-unknown` **sem** reqwest/rusqlite/chrono/directories/toml. É
+# **opt-in** (FORA do `default`); `embedded` a inclui, de modo que sob o default
+# TUDO do `ai` segue compilando exatamente como antes. Ver ADR-0024 (D2).
+ai-pure = ["dep:serde_json"]
 embedded = [
+    "ai-pure",
     "dep:chrono",
     "dep:directories",
     "dep:reqwest",

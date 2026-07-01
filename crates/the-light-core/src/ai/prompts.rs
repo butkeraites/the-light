@@ -4,11 +4,18 @@
 //! `prompts/<slug>.md` no diretório de config (ou em `LIGHT_PROMPTS`); se
 //! presente, seu conteúdo substitui integralmente o system prompt daquela lente.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+// `PathBuf`/`AiError`/`Result` só entram em `prompts_dir`/`system_prompt`, que
+// resolvem o diretório de override via `directories` → só `embedded`. A montagem
+// dos prompts (base + override por `std::fs`) é pura e compila no wasm.
+#[cfg(feature = "embedded")]
+use std::path::PathBuf;
 
 use crate::model::Lang;
 
-use super::{AiError, Denomination, Result, StudyDepth, StudyMode};
+#[cfg(feature = "embedded")]
+use super::{AiError, Result};
+use super::{Denomination, StudyDepth, StudyMode};
 
 /// Uma seção do *blueprint* de um modo (cabeçalho que o modelo deve produzir).
 pub struct SectionSpec {
@@ -143,6 +150,7 @@ fn mode_directive(mode: StudyMode) -> &'static str {
 }
 
 /// Diretório de prompts override (`LIGHT_PROMPTS` ou `<config>/prompts`).
+#[cfg(feature = "embedded")]
 pub fn prompts_dir() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("LIGHT_PROMPTS") {
         return Ok(PathBuf::from(p));
@@ -277,6 +285,11 @@ pub fn study_followup_system_prompt(mode: StudyMode, lens: Denomination, lang: L
 }
 
 /// System prompt para um modo/lente/profundidade, honrando override local.
+///
+/// Resolve o diretório de override via `prompts_dir()` (`directories`) → só
+/// `embedded`. No wasm, use [`system_prompt_in`] com um `override_dir` explícito
+/// (ou `None`, caindo no prompt embutido).
+#[cfg(feature = "embedded")]
 pub fn system_prompt(mode: StudyMode, lens: Denomination, depth: StudyDepth, lang: Lang) -> String {
     let dir = prompts_dir().ok();
     system_prompt_in(mode, lens, depth, lang, dir.as_deref())

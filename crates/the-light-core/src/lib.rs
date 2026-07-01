@@ -16,7 +16,12 @@ pub mod reference;
 // Camada PESADA — só com a feature `embedded` (store SQLite, rede, persistência).
 // Sem `embedded`, estes módulos (e suas deps rusqlite/reqwest/directories/…) não
 // são compilados, permitindo o build wasm da fronteira que usa só `reference`.
-#[cfg(feature = "embedded")]
+//
+// `ai` é a exceção: sua **superfície pura** (prompt/RAG/`ask`/citação) também
+// compila sob a feature fina `ai-pure` (sem reqwest/rusqlite), para a IA no web
+// (ADR-0024/D2). As partes pesadas do `ai` seguem gateadas por `embedded`, item a
+// item, dentro do módulo. Os demais módulos pesados continuam só sob `embedded`.
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 pub mod ai;
 #[cfg(feature = "embedded")]
 pub mod config;

@@ -9,11 +9,19 @@
 //! embarcadas), a busca é por referência canônica direta — sem mapa de
 //! versificação no caminho comum (ver `DATA_SOURCES.md` §1.4).
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::HashSet;
+// `BTreeMap`/`BTreeSet` só são usados na recuperação SQLite (`embedded`).
+#[cfg(feature = "embedded")]
+use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(feature = "embedded")]
 use rusqlite::{params, Connection};
 
-use crate::model::{Lang, Reference, VerseRange};
+use crate::model::Lang;
+// `Reference`/`VerseRange` só entram na recuperação SQLite (`embedded`); os tipos
+// e a verificação anti-alucinação são puros.
+#[cfg(feature = "embedded")]
+use crate::model::{Reference, VerseRange};
 
 /// Sentinela quando não há dados léxicos para a passagem. O prompt instrui o
 /// modelo a **declarar que não há base** em vez de inventar (anti-alucinação).
@@ -64,6 +72,7 @@ fn base_strong(s: &str) -> String {
         .to_string()
 }
 
+#[cfg(feature = "embedded")]
 #[derive(Default)]
 struct Agg {
     lemma: Option<String>,
@@ -75,6 +84,7 @@ struct Agg {
 
 /// Resolve a lista de versículos da passagem. `None` = capítulo inteiro (sem
 /// filtro de versículo) quando não há números explícitos.
+#[cfg(feature = "embedded")]
 fn resolve_verses(reference: &Reference, verse_numbers: &[u16]) -> Option<Vec<u16>> {
     if !verse_numbers.is_empty() {
         return Some(verse_numbers.to_vec());
@@ -88,6 +98,7 @@ fn resolve_verses(reference: &Reference, verse_numbers: &[u16]) -> Option<Vec<u1
 
 /// Acumula os tokens de uma passagem (um versículo, ou o capítulo todo se
 /// `verse = None`) no agregador por Strong base.
+#[cfg(feature = "embedded")]
 fn collect(
     conn: &Connection,
     book: u8,
@@ -156,6 +167,11 @@ fn collect(
 /// Recupera os dados léxicos verificados de uma passagem, agregados por Strong
 /// base, ordenados por frequência (desc) e limitados a `limit`. Best-effort:
 /// num acervo base (sem `import-scholarly`) devolve vazio — caso offline normal.
+///
+/// Lê do banco SQLite (`rusqlite`) → só no caminho `embedded`. No web o léxico é
+/// recuperado pela infra TS (precedente ADR-0011); os tipos/verificação abaixo
+/// são compartilhados (puros).
+#[cfg(feature = "embedded")]
 pub fn verified_lexicon(
     conn: &Connection,
     reference: &Reference,
@@ -219,6 +235,7 @@ pub fn verified_lexicon(
 }
 
 /// Busca as atribuições (verbatim) das fontes usadas.
+#[cfg(feature = "embedded")]
 fn attributions_for(conn: &Connection, ids: &BTreeSet<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
