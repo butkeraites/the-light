@@ -7,22 +7,39 @@
 //! exato) de **interpretação** (do modelo) — ver `SPEC.md` §6.2.
 
 pub mod citation;
-pub mod keys;
 pub mod lexicon;
 pub mod prompts;
 pub mod providers;
-pub mod research;
 pub mod study;
 
+// Módulos PESADOS do `ai` (Fase 3/4) — puxam reqwest+chrono / directories+toml.
+// Fora do grafo puro (`ai-pure`/wasm); só sob `embedded`.
+#[cfg(feature = "embedded")]
+pub mod keys;
+#[cfg(feature = "embedded")]
+pub mod research;
+
+// Superfície PURA (disponível também sob `ai-pure`/wasm): montagem de prompt/RAG,
+// `ask` ancorado, verificação e citação anti-alucinação, custo/modelo default.
 pub use citation::{Citation, CitationCollector, CitationKind};
-pub use keys::KeyStore;
-pub use lexicon::{verified_lexicon, LexicalEntry, VerifiedLexicon, VerifiedOutput};
-pub use providers::{build_provider, estimate_cost_usd};
-pub use research::{build_research_provider, ResearchProvider, WebSource, RESEARCH_BACKENDS};
+pub use lexicon::{LexicalEntry, VerifiedLexicon, VerifiedOutput};
+pub use providers::{default_model, estimate_cost_usd};
 pub use study::{
     ask, ask_context, ask_session, numbered_passage, numbered_verses, parse_refinement,
-    refine_scope, split_sections, study, Refinement, StudyRequest, StudyResult, StudySection,
+    refine_scope, split_sections, Refinement, StudySection,
 };
+
+// Superfície PESADA — rede/SQLite/persistência; só sob `embedded`.
+#[cfg(feature = "embedded")]
+pub use keys::KeyStore;
+#[cfg(feature = "embedded")]
+pub use lexicon::verified_lexicon;
+#[cfg(feature = "embedded")]
+pub use providers::build_provider;
+#[cfg(feature = "embedded")]
+pub use research::{build_research_provider, ResearchProvider, WebSource, RESEARCH_BACKENDS};
+#[cfg(feature = "embedded")]
+pub use study::{study, StudyRequest, StudyResult};
 
 use std::str::FromStr;
 
@@ -280,10 +297,13 @@ pub enum AiError {
     /// Resposta inesperada do provedor.
     #[error("resposta inesperada do provedor: {0}")]
     BadResponse(String),
-    /// TOML inválido (secrets).
+    /// TOML inválido (secrets). Só no caminho `embedded` (o `KeyStore` usa `toml`,
+    /// fora do grafo puro/wasm).
+    #[cfg(feature = "embedded")]
     #[error("secrets inválido: {0}")]
     Toml(#[from] toml::de::Error),
-    /// Erro ao serializar TOML.
+    /// Erro ao serializar TOML (idem — só `embedded`).
+    #[cfg(feature = "embedded")]
     #[error("erro ao serializar secrets: {0}")]
     TomlSer(#[from] toml::ser::Error),
     /// Diretório de configuração indisponível.

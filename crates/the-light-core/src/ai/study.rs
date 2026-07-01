@@ -2,18 +2,29 @@
 //! local + xrefs como RAG leve), chama o provedor e separa **texto citado** (do
 //! banco) de **interpretação** (do modelo).
 
+use crate::model::{Lang, Passage};
+
+use super::{prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyMode};
+
+// Superfície PESADA (deep-study, Fase 3/4): `StudyRequest`/`StudyResult`/`study()`
+// e os renders dependem de `WebSource` (chrono via `research`), do `lexicon` de
+// banco e do aparato de `citation` → só sob `embedded`. A superfície pura da
+// Fase 2 (numeração, RAG, `ask`, refinamento) não referencia nada disto.
+#[cfg(feature = "embedded")]
+use super::citation::{self, Citation, CitationCollector, CitationKind};
+#[cfg(feature = "embedded")]
+use super::lexicon::{self, VerifiedLexicon};
+#[cfg(feature = "embedded")]
+use super::research::WebSource;
+#[cfg(feature = "embedded")]
+use super::StudyDepth;
+#[cfg(feature = "embedded")]
+use crate::model::Reference;
+#[cfg(feature = "embedded")]
 use std::collections::HashSet;
 
-use crate::model::{Lang, Passage, Reference};
-
-use super::citation::{self, Citation, CitationCollector, CitationKind};
-use super::lexicon::{self, VerifiedLexicon};
-use super::research::WebSource;
-use super::{
-    prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyDepth, StudyMode,
-};
-
 /// Pedido de estudo de uma passagem.
+#[cfg(feature = "embedded")]
 pub struct StudyRequest<'a> {
     /// Referência da passagem.
     pub reference: Reference,
@@ -64,6 +75,7 @@ pub struct Refinement {
 }
 
 /// Resultado de um estudo: separa o texto citado (banco) da interpretação (LLM).
+#[cfg(feature = "embedded")]
 pub struct StudyResult {
     /// Referência estudada.
     pub reference: Reference,
@@ -166,6 +178,7 @@ pub fn split_sections(raw: &str) -> Vec<StudySection> {
     sections
 }
 
+#[cfg(feature = "embedded")]
 fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
     let xrefs = if req.cross_references.is_empty() {
         "(nenhuma)".to_string()
@@ -250,6 +263,7 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
 }
 
 /// Índices de fontes web citadas (`[W:n]`) num texto, para validar o intervalo.
+#[cfg(feature = "embedded")]
 fn cited_web_indices(text: &str) -> Vec<usize> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -272,6 +286,11 @@ fn cited_web_indices(text: &str) -> Vec<usize> {
 }
 
 /// Executa o estudo: chama o provedor e devolve um [`StudyResult`].
+///
+/// Deep-study (Fase 3): usa `system_prompt` (override em disco), léxico de banco
+/// e aparato de citação → só `embedded`. O `ask` ancorado da Fase 2 (abaixo) é a
+/// superfície pura usada no wasm.
+#[cfg(feature = "embedded")]
 pub fn study(provider: &dyn LlmProvider, req: &StudyRequest) -> Result<StudyResult> {
     let passage_text = req.passage.map(numbered_passage).unwrap_or_default();
     let system = prompts::system_prompt(req.mode, req.lens, req.depth, req.language);
@@ -403,6 +422,7 @@ pub fn refine_scope(
     Ok(parse_refinement(&raw))
 }
 
+#[cfg(feature = "embedded")]
 impl StudyResult {
     /// Renderiza o estudo em Markdown (texto citado + interpretação + aviso).
     ///
