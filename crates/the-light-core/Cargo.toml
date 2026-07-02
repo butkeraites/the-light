@@ -20,15 +20,23 @@ publish = false
 # arrasta SQLite-C nem TLS e compila para `wasm32-unknown-unknown` — é o que a
 # fronteira `the-light-app` consome no alvo web (ver the-light-app ADR-0005).
 default = ["embedded"]
-# `ai-pure` = superfície **pura** da IA (montagem de prompt/RAG + `ask` ancorado +
-# citação anti-alucinação). Só depende de `serde_json` (Rust puro) → compila para
-# `wasm32-unknown-unknown` **sem** reqwest/rusqlite/chrono/directories/toml. É
-# **opt-in** (FORA do `default`); `embedded` a inclui, de modo que sob o default
-# TUDO do `ai` segue compilando exatamente como antes. Ver ADR-0024 (D2).
-ai-pure = ["dep:serde_json"]
+# `ai-pure` = superfície **pura** da IA: montagem de prompt/RAG + `ask` ancorado +
+# citação anti-alucinação (ADR-0024/D2) **e** as partes puras do **estudo profundo**
+# (`StudyRequest`/`StudyResult` + renders `to_markdown`/`to_academic_markdown`, a
+# montagem de prompt de estudo `user_prompt`, `cited_web_indices`, e os tipos/`Mock`
+# da **pesquisa web** `WebSource`/`ResearchProvider`) — ADR-0030 (F3.11). Depende de
+# `serde_json` (Rust puro) e de `chrono` **clock-free** (features `serde`+`std`, SEM
+# `clock`) — necessário porque `WebSource.fetched_at: DateTime<Utc>` e
+# `from_web_results` entram no grafo puro; o caminho puro nunca chama `Utc::now()` (o
+# timestamp vem do TS via `from_timestamp`), então `chrono` sem `clock` não puxa
+# `wasm-bindgen`/`js-sys`. Compila para `wasm32-unknown-unknown` **sem**
+# reqwest/rusqlite/directories/toml. É **opt-in** (FORA do `default`); `embedded` a
+# inclui, de modo que sob o default TUDO do `ai` segue compilando exatamente como
+# antes (e o nativo reativa o `clock` do chrono via `chrono/clock`, abaixo).
+ai-pure = ["dep:serde_json", "dep:chrono"]
 embedded = [
     "ai-pure",
-    "dep:chrono",
+    "chrono/clock",
     "dep:directories",
     "dep:reqwest",
     "dep:rusqlite",
@@ -43,8 +51,12 @@ regex = "1.12.4"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 
-# Opcionais — só com a feature `embedded` (camada pesada: store/rede/persistência):
-chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock"], optional = true }
+# Opcionais — só com a feature `embedded` (camada pesada: store/rede/persistência).
+# `chrono` é a exceção: entra já sob `ai-pure` (via `WebSource`), porém **clock-free**
+# (`serde`+`std`, SEM `clock`) → wasm-safe (sem `wasm-bindgen`/`js-sys`). O nativo
+# (`embedded`) reativa o `clock` via `chrono/clock` no bloco `[features]` acima, então
+# o comportamento nativo (`Utc::now()` em `research`) permanece byte-a-byte.
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "std"], optional = true }
 directories = { version = "6.0.0", optional = true }
 reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "json", "default-tls"], optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }

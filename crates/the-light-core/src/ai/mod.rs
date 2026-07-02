@@ -12,11 +12,14 @@ pub mod prompts;
 pub mod providers;
 pub mod study;
 
-// Módulos PESADOS do `ai` (Fase 3/4) — puxam reqwest+chrono / directories+toml.
+// Módulos PESADOS do `ai` (Fase 3/4) — `keys` puxa directories+toml.
 // Fora do grafo puro (`ai-pure`/wasm); só sob `embedded`.
 #[cfg(feature = "embedded")]
 pub mod keys;
-#[cfg(feature = "embedded")]
+// `research` tem uma **superfície pura** (tipos `WebSource`/`ResearchProvider`/
+// `MockResearchProvider`/`RESEARCH_BACKENDS`) disponível sob `ai-pure`/wasm; o
+// transporte (reqwest + `Utc::now()`) é gateado por `embedded` DENTRO do módulo.
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 pub mod research;
 
 // Superfície PURA (disponível também sob `ai-pure`/wasm): montagem de prompt/RAG,
@@ -29,6 +32,16 @@ pub use study::{
     refine_scope, split_sections, Refinement, StudySection,
 };
 
+// Superfície PURA do **estudo profundo** e da **pesquisa web** (ADR-0030/F3.11):
+// os tipos de pedido/resultado, os renders e os tipos de fonte web são puros e
+// compõem a paridade web (prepare→fetch→finalize). O transporte (`study()` com
+// provider real + `system_prompt` de disco; `build_research_provider` com reqwest)
+// segue `embedded`, abaixo.
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
+pub use research::{MockResearchProvider, ResearchProvider, WebSource, RESEARCH_BACKENDS};
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
+pub use study::{StudyRequest, StudyResult};
+
 // Superfície PESADA — rede/SQLite/persistência; só sob `embedded`.
 #[cfg(feature = "embedded")]
 pub use keys::KeyStore;
@@ -37,9 +50,9 @@ pub use lexicon::verified_lexicon;
 #[cfg(feature = "embedded")]
 pub use providers::build_provider;
 #[cfg(feature = "embedded")]
-pub use research::{build_research_provider, ResearchProvider, WebSource, RESEARCH_BACKENDS};
+pub use research::build_research_provider;
 #[cfg(feature = "embedded")]
-pub use study::{study, StudyRequest, StudyResult};
+pub use study::study;
 
 use std::str::FromStr;
 

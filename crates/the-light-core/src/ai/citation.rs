@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 use crate::model::Lang;
 
 use super::lexicon::VerifiedLexicon;
-// `WebSource` (pesquisa web, Fase 4) puxa `chrono` via `research` → só `embedded`.
-#[cfg(feature = "embedded")]
+// `WebSource` (pesquisa web) é PURO (chrono clock-free) → parte do grafo `ai-pure`
+// (ADR-0030). `from_web_results` monta a nota web a partir dele, compartilhada
+// nativo↔web (zero drift).
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 use super::research::WebSource;
 
 /// Tipo de uma citação (define onde aparece e se é verificável).
@@ -166,8 +168,9 @@ impl CitationCollector {
     /// Adiciona citações de fontes web (chave `W1`, `W2`, … = âncora `[W:n]`).
     /// O trecho é guardado verbatim para a nota; nunca parafraseado.
     ///
-    /// Depende de `WebSource` (Fase 4, `chrono`) → só no caminho `embedded`.
-    #[cfg(feature = "embedded")]
+    /// Usa `WebSource` (chrono clock-free) → disponível também sob `ai-pure`/wasm
+    /// (ADR-0030). `ws.fetched_at.format(...)` compila sem `clock`.
+    #[cfg(any(feature = "embedded", feature = "ai-pure"))]
     pub fn from_web_results(&mut self, sources: &[WebSource]) {
         for (i, ws) in sources.iter().enumerate() {
             let mut c = Citation::empty(CitationKind::Web, format!("W{}", i + 1));
