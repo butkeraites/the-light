@@ -6,16 +6,26 @@
 //! Privacidade: cada consulta é explícita (flag `--research`) e a aplicação
 //! mostra exatamente o que sai da máquina; o backend `mock` não usa rede.
 
-use std::time::Duration;
-
+// `DateTime`/`Utc`/`serde` são PUROS (usados por `WebSource` e pelo mock via
+// `from_timestamp`) → parte do grafo `ai-pure`. O transporte (`Duration`/reqwest/
+// `serde_json::Value`/`Utc::now()`) é gateado por `embedded`, abaixo.
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "embedded")]
+use std::time::Duration;
+
+#[cfg(feature = "embedded")]
 use serde_json::Value;
 
-use super::{AiError, Result};
+#[cfg(feature = "embedded")]
+use super::AiError;
+use super::Result;
 
 /// Tempo máximo por consulta (bem menor que o timeout do LLM, 120s).
+#[cfg(feature = "embedded")]
 const RESEARCH_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(feature = "embedded")]
 const USER_AGENT: &str =
     "TheLight/1.0 (terminal Bible study; +https://github.com/butkeraites/the-light)";
 
@@ -45,6 +55,7 @@ pub trait ResearchProvider {
     fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSource>>;
 }
 
+#[cfg(feature = "embedded")]
 fn blocking_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(RESEARCH_TIMEOUT)
@@ -54,6 +65,7 @@ fn blocking_client() -> Result<reqwest::blocking::Client> {
 }
 
 /// Percent-encoda um valor de query (RFC 3986 unreserved).
+#[cfg(feature = "embedded")]
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for b in s.bytes() {
@@ -68,6 +80,7 @@ fn urlencode(s: &str) -> String {
 }
 
 /// Remove tags HTML simples de um trecho (Wikipedia devolve `<span>` de realce).
+#[cfg(feature = "embedded")]
 fn strip_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
@@ -135,10 +148,15 @@ impl ResearchProvider for MockResearchProvider {
 
 /// Provedor Wikipedia (API de busca pública, sem chave). Fonte secundária real
 /// e atribuível — útil como padrão sem credenciais.
+///
+/// Puxa reqwest + `Utc::now()` → só sob `embedded` (o transporte web no wasm é
+/// `fetch`/TS, F3.12).
+#[cfg(feature = "embedded")]
 pub struct WikipediaProvider {
     lang: String,
 }
 
+#[cfg(feature = "embedded")]
 impl WikipediaProvider {
     /// Provedor para uma edição de idioma da Wikipedia (ex.: "en", "pt").
     pub fn new(lang: impl Into<String>) -> Self {
@@ -146,6 +164,7 @@ impl WikipediaProvider {
     }
 }
 
+#[cfg(feature = "embedded")]
 impl ResearchProvider for WikipediaProvider {
     fn name(&self) -> &str {
         "wikipedia"
@@ -197,10 +216,14 @@ impl ResearchProvider for WikipediaProvider {
 // ----------------------------------------------------------------------------
 
 /// Provedor Tavily (busca otimizada p/ LLMs; requer chave em `research.tavily`).
+///
+/// Puxa reqwest + `Utc::now()` → só sob `embedded`.
+#[cfg(feature = "embedded")]
 pub struct TavilyProvider {
     key: String,
 }
 
+#[cfg(feature = "embedded")]
 impl TavilyProvider {
     /// Provedor com a chave do usuário.
     pub fn new(key: impl Into<String>) -> Self {
@@ -208,6 +231,7 @@ impl TavilyProvider {
     }
 }
 
+#[cfg(feature = "embedded")]
 impl ResearchProvider for TavilyProvider {
     fn name(&self) -> &str {
         "tavily"
@@ -265,6 +289,10 @@ impl ResearchProvider for TavilyProvider {
 
 /// Constrói um provedor de pesquisa a partir do nome do backend e da chave
 /// opcional (do `KeyStore`, sob `research.<backend>`).
+///
+/// Fabrica provedores de rede (reqwest) → só sob `embedded`. No wasm, a pesquisa
+/// web é feita por `fetch`/TS (F3.12) e os resultados montados como `WebSource`.
+#[cfg(feature = "embedded")]
 pub fn build_research_provider(
     backend: &str,
     key: Option<String>,

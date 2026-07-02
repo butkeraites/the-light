@@ -6,25 +6,31 @@ use crate::model::{Lang, Passage};
 
 use super::{prompts, ChatMessage, ChatRole, Denomination, LlmProvider, Result, StudyMode};
 
-// Superfície PESADA (deep-study, Fase 3/4): `StudyRequest`/`StudyResult`/`study()`
-// e os renders dependem de `WebSource` (chrono via `research`), do `lexicon` de
-// banco e do aparato de `citation` → só sob `embedded`. A superfície pura da
-// Fase 2 (numeração, RAG, `ask`, refinamento) não referencia nada disto.
+// Superfície PURA do **estudo profundo** (ADR-0030/F3.11): `StudyRequest`/
+// `StudyResult`, a montagem de prompt (`user_prompt`), os renders
+// (`to_markdown`/`to_academic_markdown`) e `cited_web_indices` são lógica pura —
+// dependem de `WebSource` (chrono clock-free), dos **tipos** de `lexicon`
+// (`VerifiedLexicon`/`format_verified_block`) e da citação anti-alucinação de
+// `citation` (`rewrite_anchors`/notas), todos disponíveis sob `ai-pure`/wasm. Só o
+// `CitationCollector` (usado dentro de `study()`) e o `study()` em si permanecem
+// `embedded` (provider real + `system_prompt` de disco + `lexicon::verify`).
 #[cfg(feature = "embedded")]
-use super::citation::{self, Citation, CitationCollector, CitationKind};
-#[cfg(feature = "embedded")]
+use super::citation::CitationCollector;
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
+use super::citation::{self, Citation, CitationKind};
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 use super::lexicon::{self, VerifiedLexicon};
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 use super::research::WebSource;
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 use super::StudyDepth;
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 use crate::model::Reference;
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 use std::collections::HashSet;
 
 /// Pedido de estudo de uma passagem.
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 pub struct StudyRequest<'a> {
     /// Referência da passagem.
     pub reference: Reference,
@@ -75,7 +81,7 @@ pub struct Refinement {
 }
 
 /// Resultado de um estudo: separa o texto citado (banco) da interpretação (LLM).
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 pub struct StudyResult {
     /// Referência estudada.
     pub reference: Reference,
@@ -178,8 +184,17 @@ pub fn split_sections(raw: &str) -> Vec<StudySection> {
     sections
 }
 
-#[cfg(feature = "embedded")]
-fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
+/// Monta a mensagem de **usuário** de um estudo profundo a partir do pedido e do
+/// texto (numerado) da passagem: lente/modo/profundidade, texto do acervo local,
+/// referências cruzadas, bloco léxico verificado (`[V:Strong]`) e fontes web
+/// (`[W:n]`), além do foco do usuário. É **lógica pura** e a **fonte única** do
+/// prompt de estudo: pareando `prompts::system_prompt_in(..., None)` (system) com
+/// `user_prompt(req, passage_text)` (user), o web monta o estudo
+/// (prepare→fetch→finalize, F3.12) com **zero drift** em relação ao nativo
+/// (`study()`, que usa exatamente estas mesmas peças). Anti-alucinação: o texto do
+/// versículo vem sempre de `passage_text` (acervo/store), nunca do modelo.
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
+pub fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
     let xrefs = if req.cross_references.is_empty() {
         "(nenhuma)".to_string()
     } else {
@@ -263,8 +278,12 @@ fn user_prompt(req: &StudyRequest, passage_text: &str) -> String {
 }
 
 /// Índices de fontes web citadas (`[W:n]`) num texto, para validar o intervalo.
-#[cfg(feature = "embedded")]
-fn cited_web_indices(text: &str) -> Vec<usize> {
+///
+/// Lógica pura (anti-fabricação de `[W:n]` fora do acervo de fontes) compartilhada
+/// nativo↔web: o finalize do estudo web (F3.12) usa **esta** impl para sinalizar
+/// citações fora do intervalo, sem espelhar a regra em TS.
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
+pub fn cited_web_indices(text: &str) -> Vec<usize> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(pos) = rest.find("[W:") {
@@ -422,7 +441,7 @@ pub fn refine_scope(
     Ok(parse_refinement(&raw))
 }
 
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 impl StudyResult {
     /// Renderiza o estudo em Markdown (texto citado + interpretação + aviso).
     ///
