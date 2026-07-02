@@ -142,6 +142,185 @@ fn parse_api_response(success: bool, status: &str, body: &str) -> Result<Value> 
 }
 
 // ---------------------------------------------------------------------------
+// Streaming (SSE / NDJSON) — leitura por linha e parsers de delta por provedor.
+//
+// O `stream_reader` é PURO (std::io::BufRead) → testável com um `Cursor` de
+// fixture, sem rede. Só `stream_response` faz o I/O `reqwest` (embedded). Os
+// parsers de delta são PUROS (serde_json) e un-gated (como os `*_body`/`*_extract`);
+// sob `ai-pure` ficam dead-code (coberto pelo `allow` do topo do arquivo).
+// ---------------------------------------------------------------------------
+
+/// Payload de uma linha SSE `data: …` (com espaço opcional após o `:`). `None`
+/// para linhas que NÃO são `data:` (`event:`/`id:`/comentários `:`/linhas vazias).
+fn sse_data(line: &str) -> Option<&str> {
+    line.strip_prefix("data:").map(str::trim)
+}
+
+/// Acrescenta `"stream": true` a um corpo JSON de objeto, REUSANDO o `*_body` do
+/// não-streaming (zero-drift do payload; só o flag muda). Substitui o valor se a
+/// chave já existir (caso do `ollama_body`, que tem `"stream": false`).
+fn with_stream(mut body: Value) -> Value {
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_string(), Value::Bool(true));
+    }
+    body
+}
+
+/// Lê `reader` LINHA a LINHA (SSE `text/event-stream` OU NDJSON), aplicando
+/// `parse_line` a cada linha; para cada delta não-vazio chama `on_token` e ACUMULA
+/// na String de retorno (== a resposta de `complete`). `parse_line` devolve
+/// `Ok(None)` para linhas a ignorar (`event:`/vazias/`[DONE]`/parciais/pings) e
+/// `Err(..)` para recusa/bloqueio do modelo. Puro: testável com um `Cursor`.
+fn stream_reader<R: std::io::BufRead>(
+    reader: R,
+    on_token: &mut dyn FnMut(&str),
+    mut parse_line: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<String> {
+    let mut full = String::new();
+    for line in reader.lines() {
+        let line = line.map_err(|e| AiError::Http(e.to_string()))?;
+        if let Some(delta) = parse_line(&line)? {
+            if !delta.is_empty() {
+                full.push_str(&delta);
+                on_token(&delta);
+            }
+        }
+    }
+    if full.trim().is_empty() {
+        return Err(AiError::BadResponse("resposta de texto vazia".into()));
+    }
+    Ok(full)
+}
+
+/// Abre a resposta de streaming: verifica o **status HTTP** (erro → `AiError::Http`
+/// com a mensagem da API, como `send_json`) e delega a leitura por linha ao
+/// `stream_reader`. A chave NUNCA é logada aqui (só viajou nos headers do request).
+#[cfg(feature = "embedded")]
+fn stream_response(
+    resp: reqwest::blocking::Response,
+    on_token: &mut dyn FnMut(&str),
+    parse_line: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<String> {
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().unwrap_or_default();
+        let msg = serde_json::from_str::<Value>(&text)
+            .map(|v| api_error_msg(&v))
+            .unwrap_or_else(|_| text.trim().to_string());
+        return Err(AiError::Http(format!("HTTP {}: {msg}", status.as_str())));
+    }
+    stream_reader(std::io::BufReader::new(resp), on_token, parse_line)
+}
+
+// ---- Parsers de delta por provedor (puros; espelham os `*_extract`) ----
+
+/// Anthropic (SSE): emite o texto de `content_block_delta` com
+/// `delta.type == "text_delta"` (IGNORA `thinking_delta`, como `anthropic_extract`
+/// ignora blocos não-`text`). `message_delta` com `stop_reason == "refusal"` → erro
+/// (mesma política do não-streaming). Um evento `error` in-band (após o 200, ex.:
+/// `overloaded_error`) vira `AiError::Http` — como o não-streaming faz com erros do
+/// provedor — em vez de ser silenciosamente engolido (truncaria a resposta). Linha
+/// não-JSON (ping) → `Ok(None)`.
+fn anthropic_stream_delta(data: &str) -> Result<Option<String>> {
+    let v: Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    match v.get("type").and_then(Value::as_str) {
+        Some("content_block_delta") => {
+            if v.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta") {
+                Ok(v.pointer("/delta/text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string))
+            } else {
+                Ok(None)
+            }
+        }
+        Some("message_delta") => {
+            if v.pointer("/delta/stop_reason").and_then(Value::as_str) == Some("refusal") {
+                Err(AiError::BadResponse(
+                    "o modelo recusou a solicitação (refusal)".into(),
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+        Some("error") => Err(AiError::Http(api_error_msg(&v))),
+        _ => Ok(None),
+    }
+}
+
+/// OpenAI (SSE): `choices[0].delta.content`; sentinela `[DONE]` e linhas
+/// não-JSON → `Ok(None)`. Um frame `{"error":{…}}` in-band (após o 200) vira
+/// `AiError::Http` (não é engolido).
+fn openai_stream_delta(data: &str) -> Result<Option<String>> {
+    if data == "[DONE]" {
+        return Ok(None);
+    }
+    let v: Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    if v.get("error").is_some() {
+        return Err(AiError::Http(api_error_msg(&v)));
+    }
+    Ok(v.pointer("/choices/0/delta/content")
+        .and_then(Value::as_str)
+        .map(str::to_string))
+}
+
+/// Gemini (SSE, `:streamGenerateContent?alt=sse`): concat de
+/// `candidates[0].content.parts[*].text`. `promptFeedback.blockReason` → erro
+/// (mesma política de `gemini_extract`). Um objeto `error` in-band (após o 200) vira
+/// `AiError::Http` (não é engolido).
+fn gemini_stream_delta(data: &str) -> Result<Option<String>> {
+    let v: Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    if v.get("error").is_some() {
+        return Err(AiError::Http(api_error_msg(&v)));
+    }
+    if let Some(reason) = v
+        .pointer("/promptFeedback/blockReason")
+        .and_then(Value::as_str)
+    {
+        return Err(AiError::BadResponse(format!(
+            "resposta bloqueada pelo provedor: {reason}"
+        )));
+    }
+    let parts = match v
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+    {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let text: String = parts
+        .iter()
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .collect();
+    Ok(if text.is_empty() { None } else { Some(text) })
+}
+
+/// Ollama (NDJSON, SEM prefixo `data:`): a linha INTEIRA é um objeto JSON;
+/// emite `message.content`. Linha em branco/parcial → `Ok(None)`. Uma linha
+/// `{"error":"…"}` in-band vira `AiError::Http` (não é engolida).
+fn ollama_stream_delta(line: &str) -> Result<Option<String>> {
+    let v: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    if v.get("error").is_some() {
+        return Err(AiError::Http(api_error_msg(&v)));
+    }
+    Ok(v.pointer("/message/content")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string))
+}
+
+// ---------------------------------------------------------------------------
 // Anthropic
 // ---------------------------------------------------------------------------
 
@@ -217,6 +396,20 @@ impl LlmProvider for AnthropicProvider {
         let body = anthropic_chat_body(&self.model, system, messages, DEFAULT_MAX_TOKENS);
         self.post(body)
     }
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        let body = with_stream(anthropic_body(
+            &self.model,
+            system,
+            user,
+            DEFAULT_MAX_TOKENS,
+        ));
+        self.post_stream(body, on_token)
+    }
 }
 
 #[cfg(feature = "embedded")]
@@ -229,6 +422,19 @@ impl AnthropicProvider {
             .header("content-type", "application/json")
             .json(&body);
         anthropic_extract(&send_json(req)?)
+    }
+    fn post_stream(&self, body: Value, on_token: &mut dyn FnMut(&str)) -> Result<String> {
+        let req = blocking_client()?
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &self.key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body);
+        let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
+        stream_response(resp, on_token, |line| match sse_data(line) {
+            Some(data) => anthropic_stream_delta(data),
+            None => Ok(None),
+        })
     }
 }
 
@@ -290,6 +496,15 @@ impl LlmProvider for OpenAiProvider {
             DEFAULT_MAX_TOKENS,
         ))
     }
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        let body = with_stream(openai_body(&self.model, system, user, DEFAULT_MAX_TOKENS));
+        self.post_stream(body, on_token)
+    }
 }
 
 #[cfg(feature = "embedded")]
@@ -301,6 +516,18 @@ impl OpenAiProvider {
             .header("content-type", "application/json")
             .json(&body);
         openai_extract(&send_json(req)?)
+    }
+    fn post_stream(&self, body: Value, on_token: &mut dyn FnMut(&str)) -> Result<String> {
+        let req = blocking_client()?
+            .post("https://api.openai.com/v1/chat/completions")
+            .header("authorization", format!("Bearer {}", self.key))
+            .header("content-type", "application/json")
+            .json(&body);
+        let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
+        stream_response(resp, on_token, |line| match sse_data(line) {
+            Some(data) => openai_stream_delta(data),
+            None => Ok(None),
+        })
     }
 }
 
@@ -357,6 +584,16 @@ impl LlmProvider for OllamaProvider {
     fn chat(&self, system: &str, messages: &[ChatMessage]) -> Result<String> {
         self.post(ollama_chat_body(&self.model, system, messages))
     }
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        // `ollama_body` traz `"stream": false`; `with_stream` sobrescreve p/ true.
+        let body = with_stream(ollama_body(&self.model, system, user));
+        self.post_stream(body, on_token)
+    }
 }
 
 #[cfg(feature = "embedded")]
@@ -368,6 +605,16 @@ impl OllamaProvider {
             .header("content-type", "application/json")
             .json(&body);
         ollama_extract(&send_json(req)?)
+    }
+    fn post_stream(&self, body: Value, on_token: &mut dyn FnMut(&str)) -> Result<String> {
+        let url = format!("{}/api/chat", self.host.trim_end_matches('/'));
+        let req = blocking_client()?
+            .post(url)
+            .header("content-type", "application/json")
+            .json(&body);
+        let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
+        // NDJSON: a linha inteira É o JSON (sem `data:`).
+        stream_response(resp, on_token, ollama_stream_delta)
     }
 }
 
@@ -474,6 +721,18 @@ impl LlmProvider for GeminiProvider {
             DEFAULT_MAX_TOKENS,
         ))
     }
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        // Corpo IDÊNTICO ao não-streaming; o modelo vai na URL, o streaming no endpoint.
+        self.post_stream(
+            gemini_body(&self.model, system, user, DEFAULT_MAX_TOKENS),
+            on_token,
+        )
+    }
 }
 
 #[cfg(feature = "embedded")]
@@ -490,6 +749,23 @@ impl GeminiProvider {
             .header("content-type", "application/json")
             .json(&body);
         gemini_extract(&send_json(req)?)
+    }
+    fn post_stream(&self, body: Value, on_token: &mut dyn FnMut(&str)) -> Result<String> {
+        // Streaming SSE selecionado pelo endpoint `:streamGenerateContent?alt=sse`.
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
+            self.model
+        );
+        let req = blocking_client()?
+            .post(url)
+            .header("x-goog-api-key", &self.key)
+            .header("content-type", "application/json")
+            .json(&body);
+        let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
+        stream_response(resp, on_token, |line| match sse_data(line) {
+            Some(data) => gemini_stream_delta(data),
+            None => Ok(None),
+        })
     }
 }
 
@@ -699,5 +975,193 @@ mod tests {
         assert_eq!(api_error_msg(&v), "chave inválida");
         let v2 = json!({ "error": "string simples" });
         assert_eq!(api_error_msg(&v2), "string simples");
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// Roda o `stream_reader` sobre um corpo de fixture, devolvendo (deltas, full).
+    fn run(body: &str, parse: impl FnMut(&str) -> Result<Option<String>>) -> (Vec<String>, String) {
+        let mut deltas: Vec<String> = Vec::new();
+        let full = {
+            let mut on = |t: &str| deltas.push(t.to_string());
+            stream_reader(Cursor::new(body.as_bytes()), &mut on, parse).unwrap()
+        };
+        (deltas, full)
+    }
+
+    #[test]
+    fn anthropic_sse_text_deltas_concat_to_full() {
+        // Inclui um `thinking_delta` (deve ser IGNORADO) e linhas `event:`/vazias.
+        let body = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\"}\n",
+            "\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Deus \"}}\n",
+            "\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"...\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"amou \"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"o mundo.\"}}\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n",
+        );
+        let (deltas, full) = run(body, |l| match sse_data(l) {
+            Some(d) => anthropic_stream_delta(d),
+            None => Ok(None),
+        });
+        assert_eq!(deltas, ["Deus ", "amou ", "o mundo."]);
+        assert_eq!(full, "Deus amou o mundo.");
+    }
+
+    #[test]
+    fn openai_sse_deltas_concat_and_done_ignored() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Deus \"}}]}\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"amou \"}}]}\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"o mundo.\"}}]}\n",
+            "data: [DONE]\n",
+        );
+        let (deltas, full) = run(body, |l| match sse_data(l) {
+            Some(d) => openai_stream_delta(d),
+            None => Ok(None),
+        });
+        assert_eq!(deltas, ["Deus ", "amou ", "o mundo."]);
+        assert_eq!(full, "Deus amou o mundo.");
+    }
+
+    #[test]
+    fn gemini_sse_parts_concat_to_full() {
+        let body = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Deus \"}]}}]}\n",
+            "\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"amou \"}]}}]}\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"o mundo.\"}]}}]}\n",
+        );
+        let (deltas, full) = run(body, |l| match sse_data(l) {
+            Some(d) => gemini_stream_delta(d),
+            None => Ok(None),
+        });
+        assert_eq!(deltas, ["Deus ", "amou ", "o mundo."]);
+        assert_eq!(full, "Deus amou o mundo.");
+    }
+
+    #[test]
+    fn ollama_ndjson_deltas_concat_to_full() {
+        // NDJSON: 1 objeto por linha, SEM `data:`; a última traz done:true e content vazio.
+        let body = concat!(
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"Deus \"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"amou \"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"o mundo.\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n",
+        );
+        let (deltas, full) = run(body, ollama_stream_delta);
+        assert_eq!(deltas, ["Deus ", "amou ", "o mundo."]);
+        assert_eq!(full, "Deus amou o mundo.");
+    }
+
+    #[test]
+    fn anthropic_refusal_in_stream_is_error() {
+        let body = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"}}\n";
+        let mut on = |_: &str| {};
+        let err = stream_reader(Cursor::new(body.as_bytes()), &mut on, |l| {
+            match sse_data(l) {
+                Some(d) => anthropic_stream_delta(d),
+                None => Ok(None),
+            }
+        });
+        assert!(matches!(err, Err(AiError::BadResponse(_))));
+    }
+
+    #[test]
+    fn gemini_block_reason_in_stream_is_error() {
+        let body = "data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n";
+        let mut on = |_: &str| {};
+        let err = stream_reader(Cursor::new(body.as_bytes()), &mut on, |l| {
+            match sse_data(l) {
+                Some(d) => gemini_stream_delta(d),
+                None => Ok(None),
+            }
+        });
+        assert!(matches!(err, Err(AiError::BadResponse(_))));
+    }
+
+    #[test]
+    fn with_stream_sets_flag_true() {
+        // Reusa o corpo do não-streaming e liga o flag (ollama já vem com false).
+        let b = with_stream(ollama_body("llama3", "sys", "user"));
+        assert_eq!(b.pointer("/stream"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn anthropic_error_event_in_stream_aborts_not_truncates() {
+        // Um `event: error` in-band (após deltas de texto) vira Err(Http), NÃO
+        // Ok(parcial) — não trunca silenciosamente a resposta.
+        let body = concat!(
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Deus \"}}\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n",
+        );
+        let mut on = |_: &str| {};
+        let err = stream_reader(Cursor::new(body.as_bytes()), &mut on, |l| {
+            match sse_data(l) {
+                Some(d) => anthropic_stream_delta(d),
+                None => Ok(None),
+            }
+        });
+        match err {
+            Err(AiError::Http(m)) => assert!(m.contains("Overloaded"), "{m}"),
+            other => panic!("esperava Err(Http), veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_error_frame_in_stream_is_http_error() {
+        let body = "data: {\"error\":{\"message\":\"rate limit\",\"type\":\"rate_limit_error\"}}\n";
+        let mut on = |_: &str| {};
+        let err = stream_reader(Cursor::new(body.as_bytes()), &mut on, |l| {
+            match sse_data(l) {
+                Some(d) => openai_stream_delta(d),
+                None => Ok(None),
+            }
+        });
+        match err {
+            Err(AiError::Http(m)) => assert!(m.contains("rate limit"), "{m}"),
+            other => panic!("esperava Err(Http), veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_error_frame_in_stream_is_http_error() {
+        let body =
+            "data: {\"error\":{\"code\":429,\"message\":\"RESOURCE_EXHAUSTED\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n";
+        let mut on = |_: &str| {};
+        let err = stream_reader(Cursor::new(body.as_bytes()), &mut on, |l| {
+            match sse_data(l) {
+                Some(d) => gemini_stream_delta(d),
+                None => Ok(None),
+            }
+        });
+        match err {
+            Err(AiError::Http(m)) => assert!(m.contains("RESOURCE_EXHAUSTED"), "{m}"),
+            other => panic!("esperava Err(Http), veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ollama_error_line_in_stream_is_http_error() {
+        let body = concat!(
+            "{\"message\":{\"content\":\"Deus \"},\"done\":false}\n",
+            "{\"error\":\"model not found\"}\n",
+        );
+        let mut on = |_: &str| {};
+        let err = stream_reader(Cursor::new(body.as_bytes()), &mut on, ollama_stream_delta);
+        match err {
+            Err(AiError::Http(m)) => assert!(m.contains("model not found"), "{m}"),
+            other => panic!("esperava Err(Http), veio {other:?}"),
+        }
     }
 }
