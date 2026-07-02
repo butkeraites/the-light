@@ -559,6 +559,23 @@ mod tests {
     }
 
     #[test]
+    fn default_complete_stream_matches_complete_for_mock() {
+        // Zero-drift do caminho default: o retorno do stream == o retorno do complete.
+        let m = MockLlmProvider::new("uma interpretação de teste");
+        let full_direct = m.complete("sys", "user").unwrap();
+
+        let mut deltas: Vec<String> = Vec::new();
+        let full_stream = {
+            let mut on = |t: &str| deltas.push(t.to_string());
+            m.complete_stream("sys", "user", &mut on).unwrap()
+        };
+
+        // Default NÃO-QUEBRANTE: emite a resposta INTEIRA 1× → exatamente 1 delta.
+        assert_eq!(deltas, ["uma interpretação de teste"]);
+        assert_eq!(full_stream, full_direct);
+    }
+
+    #[test]
     fn gemini_is_registered_in_providers() {
         assert!(PROVIDERS.contains(&"gemini"));
         // Sem regressão: os provedores existentes seguem listados.
