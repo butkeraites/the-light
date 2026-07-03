@@ -35,7 +35,13 @@ pub mod search;
 pub mod source;
 #[cfg(feature = "embedded")]
 pub mod store;
-#[cfg(feature = "embedded")]
+// `userdata` expõe uma superfície PURA — a GERAÇÃO de planos de leitura
+// (`plans::{available_plans, plan_by_id, Plan, PlanProgress, chunk}`), que depende só
+// de `model`/`reference`/`chrono` clock-free/`serde_json` → compila em wasm sob
+// `ai-pure` (paridade web dos planos, PR F5.10/ADR-0037). A persistência (`PlanStore`,
+// `data_dir`, notas/marcações/sessões — tudo com fs/`directories`) segue `embedded`,
+// gateada DENTRO do módulo.
+#[cfg(any(feature = "embedded", feature = "ai-pure"))]
 pub mod userdata;
 #[cfg(feature = "embedded")]
 pub mod util;

@@ -5,11 +5,13 @@
 //! parâmetro → testável), e o progresso (dias concluídos) é persistido em
 //! `reading-plans/active.json`.
 
+#[cfg(feature = "embedded")]
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "embedded")]
 use super::Result;
 use crate::model::Reference;
 use crate::reference::chapters_in_book;
@@ -115,11 +117,15 @@ impl PlanProgress {
     }
 }
 
-/// Persistência do plano ativo (`reading-plans/active.json`).
+/// Persistência do plano ativo (`reading-plans/active.json`). Usa fs (`directories`
+/// via `super::reading_plans_dir`, `crate::util::atomic_write`) → só `embedded`. A web
+/// persiste o progresso em OPFS app-side (a GERAÇÃO acima é pura/wasm-safe).
+#[cfg(feature = "embedded")]
 pub struct PlanStore {
     path: PathBuf,
 }
 
+#[cfg(feature = "embedded")]
 impl PlanStore {
     /// Cria um store ligado ao arquivo dado.
     pub fn new(path: impl Into<PathBuf>) -> Self {
@@ -230,6 +236,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "embedded")]
     fn progress_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = PlanStore::new(dir.path().join("active.json"));
