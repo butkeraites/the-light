@@ -69,6 +69,32 @@ const SPECS: &[TranslationSpec] = &[
         format: Format::ThiagobodrukArray,
         expected_verses: 31_101,
     },
+    // Rodada 3 (ADR-0012): amplitude — 2ª versão EN + 2ª versão PT, ambas livres.
+    TranslationSpec {
+        id: "bsb",
+        abbrev: "BSB",
+        name: "Berean Standard Bible",
+        lang: Lang::En,
+        // Domínio público / CC0 desde 2023-04-30 (berean.bible/terms.htm) — tratada como a KJV.
+        license: "public-domain",
+        // Mesma shape scrollmapper da KJV (que também usa `master`); pinagem por SHA é hardening futuro.
+        url: "https://raw.githubusercontent.com/scrollmapper/bible_databases/master/formats/json/BSB.json",
+        format: Format::Scrollmapper,
+        expected_verses: 31_102,
+    },
+    TranslationSpec {
+        id: "blivre",
+        abbrev: "BLIVRE",
+        name: "Bíblia Livre",
+        lang: Lang::Pt,
+        // CC BY 3.0 Brasil — atribuição OBRIGATÓRIA (exibida verbatim app-side, molde OpenBible/STEP).
+        // O mirror rotula "domínio público" ERRADAMENTE; os termos vinculantes são CC BY 3.0 Brasil.
+        license: "cc-by",
+        // Fixada na tag de release v1.0.0 (imutável), mesma origem damarals da ALM1911.
+        url: "https://github.com/damarals/biblias/releases/download/v1.0.0/BLIVRE.json",
+        format: Format::ThiagobodrukArray,
+        expected_verses: 31_102,
+    },
 ];
 
 fn spec(id: &str) -> Option<&'static TranslationSpec> {

@@ -106,6 +106,30 @@ evolução futura (os metadados de pacote já estão prontos no `the-light-cli`)
 **Consequência:** README documenta os caminhos que funcionam de fato; nenhum
 `cargo install the-light-cli` enganoso; sem etapa de `cargo publish` no release.
 
+## ADR-0012 — Embarcar BSB (en) + Bíblia Livre (pt) · 2026-07-08
+**Contexto:** a Rodada 3 do app pede amplitude (>2 versões). `DATA_SOURCES.md` já
+pré-aprovava **BSB** (Berean Standard Bible, en) e **Bíblia Livre / BLIVRE** (pt)
+como as substitutas EN/PT recomendadas; ambas caem nos parsers existentes
+(`Scrollmapper` / `ThiagobodrukArray`), 66 livros, 31.102 versículos, sem código
+novo. Mudança autorizada pelo mantenedor.
+**Decisão:** registrar duas `TranslationSpec` LIVRES em `xtask/src/import.rs`:
+`bsb` (`Berean Standard Bible`, `Lang::En`, `license="public-domain"` — CC0 desde
+2023-04-30, tratada como a KJV, shape scrollmapper `master`) e `blivre`
+(`Bíblia Livre`, `Lang::Pt`, `license="cc-by"`, damarals release **v1.0.0**
+imutável). O `cc-by` é **hardcoded**: o mirror rotula "domínio público"
+ERRADAMENTE — os termos vinculantes são **CC BY 3.0 Brasil**; `License::from`
+mapeia `cc-by`→`Cc("cc-by")` e `is_embeddable()=true` (sem `nc`/`nd`). A
+**atribuição obrigatória** da BLIVRE fica **app-side, verbatim** (molde já em
+produção para OpenBible/STEP CC-BY) — o core **não** ganha coluna
+`translations.attribution` (zero migração de schema). Import verificado numa DB
+temporária: 31.102 versículos cada, `Gênesis 1:1` e `João 3:16` conferidos
+verbatim em ambas. `fmt`/`clippy -D warnings`/`test` verdes.
+**Consequência:** quatro versões locais (`kjv`/`alm1911`/`bsb`/`blivre`); tudo a
+jusante é agnóstico à tradução (subset, seletor, paralelo, Compare). O app re-pina
+o `the-light` neste commit, regenera os assets sqlite e passa a exibir o crédito
+CC-BY da BLIVRE verbatim. Nenhuma versão protegida é embarcada (o allowlist do
+`SPECS` segue a regra de ouro do `DATA_SOURCES.md`).
+
 ## ADR-0004 — Licença do código `MIT OR Apache-2.0` · 2026-06-15
 **Contexto:** o SPEC sugere MIT ou Apache-2.0; convenção do ecossistema Rust é dupla.
 **Decisão:** `MIT OR Apache-2.0` para o código. Dados bíblicos seguem suas próprias
