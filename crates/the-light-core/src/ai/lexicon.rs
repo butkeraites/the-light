@@ -65,6 +65,40 @@ impl VerifiedLexicon {
     }
 }
 
+/// Um **token de idioma original** (interlinear), na ordem de leitura (`word_index`).
+///
+/// Diferente de [`LexicalEntry`] (agregado por Strong, para o estudo), aqui cada PALAVRA do
+/// versículo é uma linha — incluindo partículas sem Strong — preservando a ordem. Tipo **puro**
+/// (presente em todos os alvos, como [`LexicalEntry`]); só a leitura do SQLite é `embedded`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterlinearToken {
+    /// A palavra na língua original (hebraico/grego), como impressa.
+    pub surface: String,
+    /// Transliteração.
+    pub translit: Option<String>,
+    /// Lema.
+    pub lemma: Option<String>,
+    /// Número de Strong (desambiguado), quando a palavra é etiquetada.
+    pub strongs: Option<String>,
+    /// Código de morfologia VERBATIM (a `morph_legend` ainda não o decodifica — dado futuro).
+    pub morph_code: Option<String>,
+    /// Glosa breve: `COALESCE(léxico.gloss_pt, léxico.gloss, token.gloss)`.
+    pub gloss: Option<String>,
+    /// Posição da palavra no versículo (0-based).
+    pub word_index: u32,
+    /// Testamento ("OT" hebraico | "NT" grego).
+    pub testament: String,
+}
+
+/// Tokens interlineares de UM versículo + as fontes (atribuição CC-BY obrigatória).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InterlinearVerse {
+    /// Palavras na ordem de leitura (`word_index`). Vazio = versículo sem cobertura no acervo.
+    pub tokens: Vec<InterlinearToken>,
+    /// Atribuições verbatim das fontes usadas (STEP Bible CC-BY).
+    pub sources: Vec<String>,
+}
+
 /// Strong base: remove letras de desambiguação à direita ("H7225G" → "H7225").
 fn base_strong(s: &str) -> String {
     s.trim()
@@ -253,6 +287,58 @@ fn attributions_for(conn: &Connection, ids: &BTreeSet<String>) -> Vec<String> {
     out
 }
 
+/// Tokens INTERLINEARES de um versículo, na ordem de leitura, para o modo de leitura em idioma
+/// original. **Sem** filtro de Strong (partículas sem etiqueta também aparecem) e **sem** agregação
+/// (uma linha por palavra), ao contrário de [`verified_lexicon`]. `LEFT JOIN lexicon` traz a glosa
+/// PT quando existe. Best-effort: acervo sem `original_tokens` → [`InterlinearVerse::default`].
+///
+/// Lê do SQLite (`rusqlite`) → só `embedded`. No web a leitura é espelhada em TS (ADR-0011); o tipo
+/// [`InterlinearToken`] é puro/compartilhado. Anti-alucinação: os campos vêm SÓ do banco, verbatim.
+#[cfg(feature = "embedded")]
+pub fn interlinear_tokens(
+    conn: &Connection,
+    book: u8,
+    chapter: u16,
+    verse: u16,
+) -> InterlinearVerse {
+    let mut source_ids: BTreeSet<String> = BTreeSet::new();
+    let read = (|| -> rusqlite::Result<Vec<InterlinearToken>> {
+        let mut stmt = conn.prepare(
+            "SELECT t.surface, t.translit, t.lemma, t.strongs, t.morph_code, \
+             COALESCE(l.gloss_pt, l.gloss, t.gloss) AS gloss, t.word_index, t.testament, t.source_id \
+             FROM original_tokens t \
+             LEFT JOIN lexicon l ON l.strongs = t.strongs \
+             WHERE t.book_number = ?1 AND t.chapter = ?2 AND t.verse = ?3 \
+             ORDER BY t.word_index",
+        )?;
+        let mut rows = stmt.query(params![book as i64, chapter as i64, verse as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            if let Some(s) = row.get::<_, Option<String>>(8)? {
+                source_ids.insert(s);
+            }
+            out.push(InterlinearToken {
+                surface: row.get(0)?,
+                translit: row.get(1)?,
+                lemma: row.get(2)?,
+                strongs: row.get(3)?,
+                morph_code: row.get(4)?,
+                gloss: row.get(5)?,
+                word_index: row.get::<_, i64>(6)? as u32,
+                testament: row.get(7)?,
+            });
+        }
+        Ok(out)
+    })();
+    match read {
+        Ok(tokens) => {
+            let sources = attributions_for(conn, &source_ids);
+            InterlinearVerse { tokens, sources }
+        }
+        Err(_) => InterlinearVerse::default(),
+    }
+}
+
 /// Monta o **bloco de dados léxicos verificados** para o prompt. Vazio →
 /// devolve o [`EMPTY_SENTINEL`] (mantém o modelo honesto).
 pub fn format_verified_block(vl: &VerifiedLexicon, _lang: Lang) -> String {
@@ -419,6 +505,23 @@ mod tests {
         assert!(block.contains("[V:H7225]"));
         assert!(block.contains("first: beginning"));
         assert!(block.contains("Fontes:"));
+    }
+
+    #[test]
+    fn interlinear_tokens_ordered_words_no_aggregation() {
+        let store = seeded();
+        let iv = interlinear_tokens(store.conn(), 1, 1, 1);
+        // Uma linha POR PALAVRA (sem agregar por Strong), na ordem de leitura.
+        assert_eq!(iv.tokens.len(), 3);
+        assert_eq!(iv.tokens[0].surface, "רֵאשִׁית"); // superfície verbatim do store
+        assert_eq!(iv.tokens[0].strongs.as_deref(), Some("H7225G")); // Strong CRU (não a base)
+        assert_eq!(iv.tokens[0].gloss.as_deref(), Some("first: beginning")); // COALESCE do léxico
+        assert_eq!(iv.tokens[1].surface, "בָּרָא");
+        assert_eq!(iv.tokens[2].surface, "אֱלֹהִים");
+        assert_eq!(iv.tokens[0].testament, "OT");
+        assert!(iv.sources.iter().any(|s| s.contains("STEP Bible"))); // CC-BY obrigatório
+                                                                      // Versículo sem cobertura → vazio (best-effort, acervo base).
+        assert!(interlinear_tokens(store.conn(), 1, 2, 1).tokens.is_empty());
     }
 
     #[test]

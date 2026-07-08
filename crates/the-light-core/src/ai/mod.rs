@@ -25,7 +25,9 @@ pub mod research;
 // Superfície PURA (disponível também sob `ai-pure`/wasm): montagem de prompt/RAG,
 // `ask` ancorado, verificação e citação anti-alucinação, custo/modelo default.
 pub use citation::{Citation, CitationCollector, CitationKind};
-pub use lexicon::{LexicalEntry, VerifiedLexicon, VerifiedOutput};
+pub use lexicon::{
+    InterlinearToken, InterlinearVerse, LexicalEntry, VerifiedLexicon, VerifiedOutput,
+};
 pub use providers::{default_model, estimate_cost_usd};
 pub use study::{
     ask, ask_context, ask_session, numbered_passage, numbered_verses, parse_refinement,
@@ -45,6 +47,8 @@ pub use study::{StudyRequest, StudyResult};
 // Superfície PESADA — rede/SQLite/persistência; só sob `embedded`.
 #[cfg(feature = "embedded")]
 pub use keys::KeyStore;
+#[cfg(feature = "embedded")]
+pub use lexicon::interlinear_tokens;
 #[cfg(feature = "embedded")]
 pub use lexicon::verified_lexicon;
 #[cfg(feature = "embedded")]
