@@ -1,5 +1,6 @@
 //! Testes de integração do comando `light note` e da exibição na leitura.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -42,6 +43,8 @@ fn light(data_dir: &Path) -> Command {
 }
 
 /// Cria um "editor" falso que escreve um Markdown fixo no arquivo recebido.
+/// Unix-only: usa um script `.sh` + `chmod` (o teste que o usa também é `#[cfg(unix)]`).
+#[cfg(unix)]
 fn fake_editor(dir: &Path) -> PathBuf {
     let script = dir.join("fake-editor.sh");
     std::fs::write(
@@ -95,6 +98,7 @@ fn add_inline_show_list_remove() {
         .stdout(contains("Nenhuma nota"));
 }
 
+#[cfg(unix)] // usa um editor falso via script `.sh` + `chmod` (não portável p/ Windows)
 #[test]
 fn add_via_editor_writes_note() {
     let (dir, _db, data_dir) = fixture();
