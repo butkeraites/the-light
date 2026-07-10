@@ -3,15 +3,12 @@
 //! A busca é acento-insensível (o índice usa `remove_diacritics 2`), então
 //! `graca` casa `graça`. Múltiplas palavras são combinadas com AND.
 
-use rusqlite::types::Value;
 use rusqlite::Connection;
 
 use crate::model::{Reference, SearchHit, TranslationId};
-
-/// Marcador de início de termo casado, inserido por [`search`] no texto.
-pub const HL_START: &str = "\u{2}";
-/// Marcador de fim de termo casado.
-pub const HL_END: &str = "\u{3}";
+// Superfície de query PURA (ADR-0062): destaque, builder FTS e o plano de busca vivem
+// em `crate::query` (fonte única nativo↔web); re-exportados aqui p/ compatibilidade.
+pub use crate::query::{build_match_query, HL_END, HL_START};
 
 /// Limite padrão de resultados.
 pub const DEFAULT_LIMIT: usize = 20;
@@ -38,72 +35,39 @@ impl SearchOptions {
     }
 }
 
-/// Constrói uma expressão FTS5 segura a partir da consulta do usuário.
-///
-/// Cada palavra vira um termo entre aspas (escapando aspas internas), e os
-/// termos são combinados implicitamente com AND. Retorna `None` se a consulta
-/// não tiver nenhum termo utilizável — evitando injeção de sintaxe FTS5.
-pub fn build_match_query(input: &str) -> Option<String> {
-    let terms: Vec<String> = input
-        .split_whitespace()
-        .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
-        .collect();
-    if terms.is_empty() {
-        None
-    } else {
-        Some(terms.join(" "))
-    }
-}
-
 /// Executa a busca, devolvendo os melhores resultados por relevância (BM25).
 pub fn search(
     conn: &Connection,
     query: &str,
     opts: &SearchOptions,
 ) -> rusqlite::Result<Vec<SearchHit>> {
-    let Some(match_query) = build_match_query(query) else {
+    // SQL + params + builder FTS + clamp vêm do plano puro (fonte única nativo↔web).
+    let Some((sql, params)) =
+        crate::query::search_plan(query, opts.translation.as_str(), opts.book, opts.limit)
+    else {
         return Ok(Vec::new());
     };
 
-    let mut sql = String::from(
-        "SELECT v.book_number, v.chapter, v.verse, v.text, \
-         highlight(verses_fts, 0, ?, ?) AS hl, bm25(verses_fts) AS score \
-         FROM verses_fts JOIN verses v ON v.id = verses_fts.verse_id \
-         WHERE verses_fts MATCH ? AND verses_fts.translation_id = ?",
-    );
-    let mut params: Vec<Value> = vec![
-        Value::Text(HL_START.to_string()),
-        Value::Text(HL_END.to_string()),
-        Value::Text(match_query),
-        Value::Text(opts.translation.as_str().to_string()),
-    ];
-    if let Some(book) = opts.book {
-        sql.push_str(" AND v.book_number = ?");
-        params.push(Value::Integer(book as i64));
-    }
-    sql.push_str(" ORDER BY score LIMIT ?");
-    // Clamp para [1, i64::MAX]: evita LIMIT 0 (inútil) e o cast usize→i64 que
-    // transformaria valores enormes em -1 (que o SQLite trata como "sem limite").
-    let limit = opts.limit.clamp(1, i64::MAX as usize) as i64;
-    params.push(Value::Integer(limit));
-
     let mut stmt = conn.prepare(&sql)?;
     let tid = opts.translation.clone();
-    let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
-        let book: i64 = row.get(0)?;
-        let chapter: i64 = row.get(1)?;
-        let verse: i64 = row.get(2)?;
-        let text: String = row.get(3)?;
-        let highlighted: String = row.get(4)?;
-        let score: f64 = row.get(5)?;
-        Ok(SearchHit {
-            reference: Reference::single(book as u8, chapter as u16, verse as u16),
-            translation: tid.clone(),
-            text,
-            highlighted,
-            score,
-        })
-    })?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(params.into_iter().map(rusqlite::types::Value::from)),
+        |row| {
+            let book: i64 = row.get(0)?;
+            let chapter: i64 = row.get(1)?;
+            let verse: i64 = row.get(2)?;
+            let text: String = row.get(3)?;
+            let highlighted: String = row.get(4)?;
+            let score: f64 = row.get(5)?;
+            Ok(SearchHit {
+                reference: Reference::single(book as u8, chapter as u16, verse as u16),
+                translation: tid.clone(),
+                text,
+                highlighted,
+                score,
+            })
+        },
+    )?;
 
     rows.collect()
 }
