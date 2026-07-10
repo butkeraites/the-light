@@ -43,6 +43,23 @@ jobs:
       - name: cargo test (doctests)
         run: cargo test --workspace --doc
 
+  # Superfície PURA para wasm (ADR-0062): garante que `ai-pure` (sem `embedded`)
+  # compila para `wasm32-unknown-unknown` SEM arrastar rusqlite/reqwest — é o alvo que
+  # a fronteira `the-light-app` consome no web. A superfície DATA-ONLY de transporte
+  # (`*_body`/`*_extract`/`*_stream_delta`/URLs/headers/`DEFAULT_MAX_TOKENS`) é `pub` e
+  # tem de permanecer wasm-safe; este portão pega qualquer regressão no PRÓPRIO core.
+  wasm-pure:
+    name: build ai-pure (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (ai-pure, wasm32)
+        run: cargo build -p the-light-core --no-default-features --features ai-pure --target wasm32-unknown-unknown
+
   # Garante que a MSRV declarada (rust-version) ainda compila.
   msrv:
     name: build (MSRV 1.85)
