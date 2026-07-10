@@ -12,6 +12,9 @@
 pub mod highlights;
 #[cfg(feature = "embedded")]
 pub mod notes;
+// `note_slug` é PURO (ai-pure/wasm-safe): o formato do nome de arquivo da nota, fonte
+// única p/ o nativo (fs) e o web (OPFS). ADR-0062.
+pub mod note_slug;
 pub mod plans;
 #[cfg(feature = "embedded")]
 pub mod sessions;

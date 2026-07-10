@@ -7,9 +7,9 @@
 
 use std::path::PathBuf;
 
+use super::note_slug::{parse_slug, slug};
 use super::Result;
-use crate::model::{Lang, Reference};
-use crate::reference::{format_reference, parse_reference};
+use crate::model::Reference;
 
 /// Uma nota associada a uma referência.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,21 +18,6 @@ pub struct Note {
     pub reference: Reference,
     /// Corpo em Markdown.
     pub body: String,
-}
-
-/// Nome de arquivo (sem diretório) para uma referência.
-fn slug(reference: &Reference) -> String {
-    format!(
-        "{}.md",
-        format_reference(reference, Lang::En)
-            .replace(' ', "_")
-            .replace(':', ".")
-    )
-}
-
-/// Recupera a referência a partir do nome de arquivo (`stem`, sem `.md`).
-fn parse_slug(stem: &str) -> Option<Reference> {
-    parse_reference(&stem.replace('_', " ")).ok()
 }
 
 /// Coleção de notas num diretório.
@@ -133,24 +118,10 @@ impl NoteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reference::parse_reference;
 
     fn r(s: &str) -> Reference {
         parse_reference(s).unwrap()
-    }
-
-    #[test]
-    fn slug_roundtrips_for_all_shapes() {
-        for s in [
-            "John 3:16",
-            "Genesis 1:1-3",
-            "Psalms 23",
-            "1 Corinthians 13:4-7",
-        ] {
-            let reference = r(s);
-            let name = slug(&reference);
-            let stem = name.strip_suffix(".md").unwrap();
-            assert_eq!(parse_slug(stem), Some(reference), "slug {name}");
-        }
     }
 
     #[test]
