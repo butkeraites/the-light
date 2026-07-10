@@ -181,6 +181,101 @@ pub fn xref_plan(
     )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ai::lexicon — léxico verificado (agregado por Strong), interlinear e atribuições.
+// Os SELECTs vivem aqui (fonte única nativo↔web); a agregação "primeiro não-nulo
+// vence" e a ordenação por frequência seguem no consumidor (nativo `ai/lexicon.rs` e,
+// no web, o shaper TS) — este módulo só entrega o `(sql, params)` de DADO.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Strong **base**: remove as letras de desambiguação à direita (`"H7225G"` → `"H7225"`;
+/// `"G0976"` termina em dígito → inalterado). Puro/compartilhado — a agregação do léxico
+/// (por Strong base) e a verificação anti-alucinação (`ai::lexicon::verify`) dependem dele;
+/// a fronteira do app o expõe ao web (fonte única, ADR-0062). Vivia em `ai::lexicon`.
+pub fn base_strong(s: &str) -> String {
+    s.trim()
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+        .to_string()
+}
+
+/// Resolve a lista de versículos abrangidos por uma passagem. `None` = capítulo inteiro
+/// (sem filtro de versículo) quando não há números explícitos. Puro (só tipos de `model`);
+/// movido de `ai::lexicon` (ADR-0062) para colocar junto dos planos de léxico. Números
+/// explícitos vencem a referência; senão deriva de `VerseRange` (Single→`[v]`,
+/// Range→`start..=end`, WholeChapter→`None`).
+pub fn resolve_verses(reference: &Reference, verse_numbers: &[u16]) -> Option<Vec<u16>> {
+    if !verse_numbers.is_empty() {
+        return Some(verse_numbers.to_vec());
+    }
+    match reference.verses {
+        VerseRange::Single(v) => Some(vec![v]),
+        VerseRange::Range { start, end } => Some((start..=end).collect()),
+        VerseRange::WholeChapter => None,
+    }
+}
+
+/// `SELECT` base do **léxico verificado** de uma passagem (agregado adiante por Strong
+/// base): tokens de `original_tokens` + glosa por `LEFT JOIN lexicon` (`COALESCE`
+/// `gloss_pt`→`gloss`→token), filtrando por livro/capítulo e Strong não-vazio. `?1` =
+/// livro, `?2` = capítulo. **Sem `ORDER BY`:** a ordem das linhas (rowid) é a que a
+/// agregação "primeiro não-nulo vence" pressupõe (nativo e web).
+pub const LEXICON_COLLECT_SELECT: &str = "SELECT t.strongs, t.lemma, t.translit, t.testament, \
+     COALESCE(l.gloss_pt, l.gloss, t.gloss) AS gloss, t.source_id, l.source_id \
+     FROM original_tokens t \
+     LEFT JOIN lexicon l ON l.strongs = t.strongs \
+     WHERE t.book_number = ?1 AND t.chapter = ?2 \
+     AND t.strongs IS NOT NULL AND t.strongs <> ''";
+
+/// Plano do léxico verificado de uma passagem: `(sql, [book, chapter, verse?])`. Com
+/// `verse = Some(v)` acrescenta `AND t.verse = ?3` (um versículo); `None` = capítulo
+/// inteiro (sem filtro). Params na ordem posicional.
+pub fn lexicon_collect_plan(book: u8, chapter: u16, verse: Option<u16>) -> (String, Vec<SqlParam>) {
+    let mut params = vec![SqlParam::Int(book as i64), SqlParam::Int(chapter as i64)];
+    let sql = match verse {
+        Some(v) => {
+            params.push(SqlParam::Int(v as i64));
+            format!("{LEXICON_COLLECT_SELECT} AND t.verse = ?3")
+        }
+        None => LEXICON_COLLECT_SELECT.to_string(),
+    };
+    (sql, params)
+}
+
+/// `SELECT` **interlinear** de UM versículo (tokens na ordem de leitura, **sem** agregar e
+/// **sem** filtro de Strong — partículas incluídas). `LEFT JOIN lexicon` traz a glosa PT
+/// (`COALESCE`). `?1..?3` = livro/capítulo/versículo; `ORDER BY t.word_index` fixa a ordem.
+pub const INTERLINEAR_SELECT: &str =
+    "SELECT t.surface, t.translit, t.lemma, t.strongs, t.morph_code, \
+     COALESCE(l.gloss_pt, l.gloss, t.gloss) AS gloss, t.word_index, t.testament, t.source_id \
+     FROM original_tokens t \
+     LEFT JOIN lexicon l ON l.strongs = t.strongs \
+     WHERE t.book_number = ?1 AND t.chapter = ?2 AND t.verse = ?3 \
+     ORDER BY t.word_index";
+
+/// Plano interlinear de um versículo: `(sql, [book, chapter, verse])`.
+pub fn interlinear_plan(book: u8, chapter: u16, verse: u16) -> (String, Vec<SqlParam>) {
+    (
+        INTERLINEAR_SELECT.to_string(),
+        vec![
+            SqlParam::Int(book as i64),
+            SqlParam::Int(chapter as i64),
+            SqlParam::Int(verse as i64),
+        ],
+    )
+}
+
+/// `SELECT` da atribuição (verbatim, CC-BY) de uma fonte usada. `?1` = id da fonte.
+pub const ATTRIBUTION_SELECT: &str = "SELECT attribution FROM scholarly_sources WHERE id = ?1";
+
+/// Plano da atribuição de uma fonte: `(sql, [id])`. O consumidor deduplica (nativo:
+/// `BTreeSet`/`HashSet`; web: shaper) preservando a ordem — o plano só entrega a query.
+pub fn attributions_plan(id: &str) -> (String, Vec<SqlParam>) {
+    (
+        ATTRIBUTION_SELECT.to_string(),
+        vec![SqlParam::Text(id.to_string())],
+    )
+}
+
 /// Mapeamento p/ `rusqlite` — ÚNICO ponto que toca o driver (gateado por `embedded`).
 #[cfg(feature = "embedded")]
 impl From<SqlParam> for rusqlite::types::Value {
@@ -245,5 +340,70 @@ mod tests {
     fn xref_plan_clamps_limit() {
         let (_, params) = xref_plan(43, 3, 16, 1, usize::MAX);
         assert_eq!(params.last(), Some(&SqlParam::Int(i64::MAX)));
+    }
+
+    #[test]
+    fn base_strong_strips_disambiguation() {
+        assert_eq!(base_strong("H7225G"), "H7225");
+        assert_eq!(base_strong("G0976"), "G0976");
+        assert_eq!(base_strong("H0853"), "H0853");
+        // Espaços em volta são aparados antes (como no acervo).
+        assert_eq!(base_strong(" H7225G "), "H7225");
+    }
+
+    #[test]
+    fn resolve_verses_prefers_numbers_then_derives_from_reference() {
+        // Números explícitos vencem a referência.
+        assert_eq!(
+            resolve_verses(&Reference::whole_chapter(1, 1), &[2, 4]),
+            Some(vec![2, 4])
+        );
+        // Single → [v]; Range → start..=end; WholeChapter (sem números) → None.
+        assert_eq!(
+            resolve_verses(&Reference::single(1, 1, 3), &[]),
+            Some(vec![3])
+        );
+        assert_eq!(
+            resolve_verses(
+                &Reference {
+                    book: 1,
+                    chapter: 1,
+                    verses: VerseRange::Range { start: 2, end: 4 },
+                },
+                &[]
+            ),
+            Some(vec![2, 3, 4])
+        );
+        assert_eq!(resolve_verses(&Reference::whole_chapter(1, 1), &[]), None);
+    }
+
+    #[test]
+    fn lexicon_collect_plan_adds_verse_filter_when_present() {
+        let (sql, params) = lexicon_collect_plan(1, 1, None);
+        assert!(sql.contains("FROM original_tokens") && !sql.contains("t.verse = ?3"));
+        assert_eq!(params, vec![SqlParam::Int(1), SqlParam::Int(1)]);
+        let (sql, params) = lexicon_collect_plan(1, 1, Some(5));
+        assert!(sql.contains("AND t.verse = ?3"));
+        assert_eq!(
+            params,
+            vec![SqlParam::Int(1), SqlParam::Int(1), SqlParam::Int(5)]
+        );
+    }
+
+    #[test]
+    fn interlinear_plan_orders_by_word_index() {
+        let (sql, params) = interlinear_plan(43, 3, 16);
+        assert!(sql.contains("ORDER BY t.word_index"));
+        assert_eq!(
+            params,
+            vec![SqlParam::Int(43), SqlParam::Int(3), SqlParam::Int(16)]
+        );
+    }
+
+    #[test]
+    fn attributions_plan_binds_id() {
+        let (sql, params) = attributions_plan("tahot");
+        assert!(sql.contains("scholarly_sources"));
+        assert_eq!(params, vec![SqlParam::Text("tahot".to_string())]);
     }
 }

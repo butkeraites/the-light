@@ -15,13 +15,18 @@ use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "embedded")]
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::model::Lang;
-// `Reference`/`VerseRange` só entram na recuperação SQLite (`embedded`); os tipos
-// e a verificação anti-alucinação são puros.
+// `Reference` só entra na recuperação SQLite (`embedded`); os tipos e a verificação
+// anti-alucinação são puros.
 #[cfg(feature = "embedded")]
-use crate::model::{Reference, VerseRange};
+use crate::model::Reference;
+// `base_strong` (Strong base) e `resolve_verses` vivem em `crate::query` (fonte única
+// nativo↔web, ADR-0062). `base_strong` é usado pela agregação SQLite (`embedded`) E pela
+// verificação PURA `verify` — por isso o import é un-gated; `resolve_verses` (só
+// `embedded`) é chamado por caminho fully-qualified.
+use crate::query::base_strong;
 
 /// Sentinela quando não há dados léxicos para a passagem. O prompt instrui o
 /// modelo a **declarar que não há base** em vez de inventar (anti-alucinação).
@@ -99,13 +104,6 @@ pub struct InterlinearVerse {
     pub sources: Vec<String>,
 }
 
-/// Strong base: remove letras de desambiguação à direita ("H7225G" → "H7225").
-fn base_strong(s: &str) -> String {
-    s.trim()
-        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
-        .to_string()
-}
-
 #[cfg(feature = "embedded")]
 #[derive(Default)]
 struct Agg {
@@ -116,22 +114,10 @@ struct Agg {
     occ: u32,
 }
 
-/// Resolve a lista de versículos da passagem. `None` = capítulo inteiro (sem
-/// filtro de versículo) quando não há números explícitos.
-#[cfg(feature = "embedded")]
-fn resolve_verses(reference: &Reference, verse_numbers: &[u16]) -> Option<Vec<u16>> {
-    if !verse_numbers.is_empty() {
-        return Some(verse_numbers.to_vec());
-    }
-    match reference.verses {
-        VerseRange::Single(v) => Some(vec![v]),
-        VerseRange::Range { start, end } => Some((start..=end).collect()),
-        VerseRange::WholeChapter => None,
-    }
-}
-
 /// Acumula os tokens de uma passagem (um versículo, ou o capítulo todo se
-/// `verse = None`) no agregador por Strong base.
+/// `verse = None`) no agregador por Strong base. O `(sql, params)` vem do plano puro
+/// `crate::query::lexicon_collect_plan` (fonte única nativo↔web, ADR-0062); a agregação
+/// "primeiro não-nulo vence" segue aqui (nativo) — o web a espelha no shaper TS.
 #[cfg(feature = "embedded")]
 fn collect(
     conn: &Connection,
@@ -141,13 +127,12 @@ fn collect(
     by_base: &mut BTreeMap<String, Agg>,
     sources: &mut BTreeSet<String>,
 ) -> rusqlite::Result<()> {
-    let base_sql = "SELECT t.strongs, t.lemma, t.translit, t.testament, \
-                    COALESCE(l.gloss_pt, l.gloss, t.gloss) AS gloss, t.source_id, l.source_id \
-                    FROM original_tokens t \
-                    LEFT JOIN lexicon l ON l.strongs = t.strongs \
-                    WHERE t.book_number = ?1 AND t.chapter = ?2 \
-                    AND t.strongs IS NOT NULL AND t.strongs <> ''";
-    let mut handle = |row: &rusqlite::Row| -> rusqlite::Result<()> {
+    let (sql, params) = crate::query::lexicon_collect_plan(book, chapter, verse);
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(
+        params.into_iter().map(rusqlite::types::Value::from),
+    ))?;
+    while let Some(row) = rows.next()? {
         let strongs: String = row.get(0)?;
         let lemma: Option<String> = row.get(1)?;
         let translit: Option<String> = row.get(2)?;
@@ -176,24 +161,6 @@ fn collect(
         if let Some(s) = lex_src {
             sources.insert(s);
         }
-        Ok(())
-    };
-
-    match verse {
-        Some(v) => {
-            let mut stmt = conn.prepare(&format!("{base_sql} AND t.verse = ?3"))?;
-            let mut rows = stmt.query(params![book as i64, chapter as i64, v as i64])?;
-            while let Some(r) = rows.next()? {
-                handle(r)?;
-            }
-        }
-        None => {
-            let mut stmt = conn.prepare(base_sql)?;
-            let mut rows = stmt.query(params![book as i64, chapter as i64])?;
-            while let Some(r) = rows.next()? {
-                handle(r)?;
-            }
-        }
     }
     Ok(())
 }
@@ -217,7 +184,7 @@ pub fn verified_lexicon(
     let mut source_ids: BTreeSet<String> = BTreeSet::new();
 
     let result = (|| -> rusqlite::Result<()> {
-        match resolve_verses(reference, verse_numbers) {
+        match crate::query::resolve_verses(reference, verse_numbers) {
             Some(verses) => {
                 for v in verses {
                     collect(
@@ -268,15 +235,18 @@ pub fn verified_lexicon(
     VerifiedLexicon { entries, sources }
 }
 
-/// Busca as atribuições (verbatim) das fontes usadas.
+/// Busca as atribuições (verbatim) das fontes usadas. O `(sql, params)` vem do plano puro
+/// `crate::query::attributions_plan` (fonte única nativo↔web, ADR-0062); a dedup
+/// preservando a ordem segue aqui.
 #[cfg(feature = "embedded")]
 fn attributions_for(conn: &Connection, ids: &BTreeSet<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for id in ids {
+        let (sql, params) = crate::query::attributions_plan(id);
         if let Ok(attr) = conn.query_row(
-            "SELECT attribution FROM scholarly_sources WHERE id = ?1",
-            params![id],
+            &sql,
+            rusqlite::params_from_iter(params.into_iter().map(rusqlite::types::Value::from)),
             |r| r.get::<_, String>(0),
         ) {
             if seen.insert(attr.clone()) {
@@ -303,15 +273,13 @@ pub fn interlinear_tokens(
 ) -> InterlinearVerse {
     let mut source_ids: BTreeSet<String> = BTreeSet::new();
     let read = (|| -> rusqlite::Result<Vec<InterlinearToken>> {
-        let mut stmt = conn.prepare(
-            "SELECT t.surface, t.translit, t.lemma, t.strongs, t.morph_code, \
-             COALESCE(l.gloss_pt, l.gloss, t.gloss) AS gloss, t.word_index, t.testament, t.source_id \
-             FROM original_tokens t \
-             LEFT JOIN lexicon l ON l.strongs = t.strongs \
-             WHERE t.book_number = ?1 AND t.chapter = ?2 AND t.verse = ?3 \
-             ORDER BY t.word_index",
-        )?;
-        let mut rows = stmt.query(params![book as i64, chapter as i64, verse as i64])?;
+        // `(sql, params)` do plano puro `crate::query::interlinear_plan` (fonte única
+        // nativo↔web, ADR-0062); a montagem dos tokens na ordem de leitura segue aqui.
+        let (sql, params) = crate::query::interlinear_plan(book, chapter, verse);
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(
+            params.into_iter().map(rusqlite::types::Value::from),
+        ))?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             if let Some(s) = row.get::<_, Option<String>>(8)? {
@@ -437,6 +405,8 @@ mod tests {
     use super::*;
     use crate::model::Reference;
     use crate::store::Store;
+    // `params!` agora é só de teste (a recuperação usa `params_from_iter` sobre o plano).
+    use rusqlite::params;
 
     fn seeded() -> Store {
         let store = Store::open_in_memory().unwrap();
@@ -483,12 +453,7 @@ mod tests {
         store
     }
 
-    #[test]
-    fn base_strong_strips_disambiguation() {
-        assert_eq!(base_strong("H7225G"), "H7225");
-        assert_eq!(base_strong("G0976"), "G0976");
-        assert_eq!(base_strong("H0853"), "H0853");
-    }
+    // `base_strong` movido p/ `crate::query` (ADR-0062); seu teste unitário mora lá.
 
     #[test]
     fn verified_lexicon_aggregates_and_joins_gloss() {
