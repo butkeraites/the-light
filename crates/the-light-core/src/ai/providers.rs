@@ -5,11 +5,13 @@
 //! funções puras (testáveis sem rede); só `complete()` faz I/O. Os testes nunca
 //! chamam a rede nem usam chaves reais — ver `MockLlmProvider`.
 
-// Sob `ai-pure` (SEM `embedded`), as helpers puras de corpo/parse (`*_body`,
-// `*_extract`, `messages_json`, `parse_api_response`, `api_error_msg`) ainda não
-// têm chamador: o transporte no wasm é via `fetch` (F2.7b), que as consumirá.
-// Silenciamos o `dead_code` esperado SÓ nesse caminho; sob `embedded` elas são
-// exercitadas pelos `impl LlmProvider` + testes, então `-D warnings` segue valendo.
+// A superfície pura de transporte (`*_body`/`*_chat_body`/`*_extract`/
+// `*_stream_delta`/`messages_json`/`sse_data`/`with_stream`/`parse_api_response`/
+// `api_error_msg` + URLs/headers) é `pub` e DATA-ONLY (ADR-0062): sob `embedded` os
+// `impl LlmProvider` a consomem; sob `ai-pure` (wasm) o consumidor é a fronteira
+// `the-light-app` via `fetch`. Só `stream_reader` (privado, usado apenas por
+// `stream_response`/`embedded`) fica dead-code sob `ai-pure` — daí o `allow`
+// restrito a esse caminho.
 #![cfg_attr(not(feature = "embedded"), allow(dead_code))]
 
 #[cfg(feature = "embedded")]
@@ -25,11 +27,81 @@ use super::LlmProvider;
 
 #[cfg(feature = "embedded")]
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
-#[cfg(feature = "embedded")]
-const DEFAULT_MAX_TOKENS: u32 = 8192;
+/// Teto de tokens de saída pedido a cada provedor. Superfície DATA-ONLY (ADR-0062):
+/// o alvo web IMPORTA este valor em vez de hard-codar `8192`. Un-gated → disponível
+/// sob `ai-pure` (wasm); é um `u32` puro, não arrasta reqwest.
+pub const DEFAULT_MAX_TOKENS: u32 = 8192;
+
+// --- Superfície DATA-ONLY de transporte (ADR-0062) -------------------------
+// URLs e headers como DADO puro, un-gated: o alvo web monta `{url, headers, body}` e
+// chama `*_extract`/`*_stream_delta`, tornando o `fetch` no TS um transporte burro. O
+// caminho nativo (`embedded`) consome ESTAS MESMAS helpers → uma única fonte da verdade
+// (nativo e web só podem CONCORDAR).
+
+/// Endpoint Anthropic (Messages API).
+pub const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
+/// Endpoint OpenAI (chat completions).
+pub const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
+/// Host Ollama padrão (local) quando `LIGHT_OLLAMA_HOST` não está setado.
+pub const OLLAMA_DEFAULT_HOST: &str = "http://localhost:11434";
+
+/// URL do endpoint Ollama `/api/chat` a partir do `host` (remove `/` final).
+pub fn ollama_url(host: &str) -> String {
+    format!("{}/api/chat", host.trim_end_matches('/'))
+}
+
+/// URL Gemini: `:generateContent` (não-stream) ou `:streamGenerateContent?alt=sse`
+/// (stream). O modelo vai na URL — não no corpo.
+pub fn gemini_url(model: &str, stream: bool) -> String {
+    let method = if stream {
+        "streamGenerateContent?alt=sse"
+    } else {
+        "generateContent"
+    };
+    format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:{method}")
+}
+
+/// Headers do request Anthropic. `browser=true` acrescenta o header de acesso-direto-
+/// do-browser (CORS; só o alvo web precisa — ADR-0058); o nativo passa `false`,
+/// mantendo o request byte-a-byte.
+pub fn anthropic_headers(key: &str, browser: bool) -> Vec<(String, String)> {
+    let mut h = vec![
+        ("x-api-key".to_string(), key.to_string()),
+        ("anthropic-version".to_string(), "2023-06-01".to_string()),
+        ("content-type".to_string(), "application/json".to_string()),
+    ];
+    if browser {
+        h.push((
+            "anthropic-dangerous-direct-browser-access".to_string(),
+            "true".to_string(),
+        ));
+    }
+    h
+}
+
+/// Headers do request OpenAI (Bearer + content-type).
+pub fn openai_headers(key: &str) -> Vec<(String, String)> {
+    vec![
+        ("authorization".to_string(), format!("Bearer {key}")),
+        ("content-type".to_string(), "application/json".to_string()),
+    ]
+}
+
+/// Headers do request Ollama (local, sem chave).
+pub fn ollama_headers() -> Vec<(String, String)> {
+    vec![("content-type".to_string(), "application/json".to_string())]
+}
+
+/// Headers do request Gemini (chave em `x-goog-api-key`, nunca na URL/log).
+pub fn gemini_headers(key: &str) -> Vec<(String, String)> {
+    vec![
+        ("x-goog-api-key".to_string(), key.to_string()),
+        ("content-type".to_string(), "application/json".to_string()),
+    ]
+}
 
 /// Converte o histórico de conversa no array `[{role, content}]` das APIs.
-fn messages_json(messages: &[ChatMessage]) -> Vec<Value> {
+pub fn messages_json(messages: &[ChatMessage]) -> Vec<Value> {
     messages
         .iter()
         .map(|m| json!({ "role": m.role.as_str(), "content": m.content }))
@@ -77,7 +149,7 @@ pub fn build_provider(
         }
         "ollama" => {
             let host = std::env::var("LIGHT_OLLAMA_HOST")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+                .unwrap_or_else(|_| OLLAMA_DEFAULT_HOST.to_string());
             Ok(Box::new(OllamaProvider { host, model }))
         }
         "gemini" => {
@@ -119,6 +191,18 @@ fn blocking_client() -> Result<reqwest::blocking::Client> {
         .map_err(|e| AiError::Http(e.to_string()))
 }
 
+/// Aplica os headers DATA-ONLY (`[(nome, valor)]`) ao request reqwest. Único ponto
+/// nativo que consome `*_headers`, garantindo que web e nativo montem o MESMO header.
+#[cfg(feature = "embedded")]
+fn apply_headers(
+    req: reqwest::blocking::RequestBuilder,
+    headers: &[(String, String)],
+) -> reqwest::blocking::RequestBuilder {
+    headers
+        .iter()
+        .fold(req, |req, (k, v)| req.header(k.as_str(), v.as_str()))
+}
+
 /// Envia a requisição e lê o corpo verificando o **status HTTP antes** de exigir
 /// JSON válido — assim erros de API (não-2xx) viram um `AiError::Http` legível
 /// (mensagem da API ou corpo bruto), nunca um erro genérico de parsing.
@@ -131,7 +215,7 @@ fn send_json(req: reqwest::blocking::RequestBuilder) -> Result<Value> {
 }
 
 /// Núcleo puro de [`send_json`] (testável sem rede).
-fn parse_api_response(success: bool, status: &str, body: &str) -> Result<Value> {
+pub fn parse_api_response(success: bool, status: &str, body: &str) -> Result<Value> {
     if !success {
         let msg = serde_json::from_str::<Value>(body)
             .map(|v| api_error_msg(&v))
@@ -152,14 +236,14 @@ fn parse_api_response(success: bool, status: &str, body: &str) -> Result<Value> 
 
 /// Payload de uma linha SSE `data: …` (com espaço opcional após o `:`). `None`
 /// para linhas que NÃO são `data:` (`event:`/`id:`/comentários `:`/linhas vazias).
-fn sse_data(line: &str) -> Option<&str> {
+pub fn sse_data(line: &str) -> Option<&str> {
     line.strip_prefix("data:").map(str::trim)
 }
 
 /// Acrescenta `"stream": true` a um corpo JSON de objeto, REUSANDO o `*_body` do
 /// não-streaming (zero-drift do payload; só o flag muda). Substitui o valor se a
 /// chave já existir (caso do `ollama_body`, que tem `"stream": false`).
-fn with_stream(mut body: Value) -> Value {
+pub fn with_stream(mut body: Value) -> Value {
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".to_string(), Value::Bool(true));
     }
@@ -221,7 +305,7 @@ fn stream_response(
 /// `overloaded_error`) vira `AiError::Http` — como o não-streaming faz com erros do
 /// provedor — em vez de ser silenciosamente engolido (truncaria a resposta). Linha
 /// não-JSON (ping) → `Ok(None)`.
-fn anthropic_stream_delta(data: &str) -> Result<Option<String>> {
+pub fn anthropic_stream_delta(data: &str) -> Result<Option<String>> {
     let v: Value = match serde_json::from_str(data) {
         Ok(v) => v,
         Err(_) => return Ok(None),
@@ -253,7 +337,7 @@ fn anthropic_stream_delta(data: &str) -> Result<Option<String>> {
 /// OpenAI (SSE): `choices[0].delta.content`; sentinela `[DONE]` e linhas
 /// não-JSON → `Ok(None)`. Um frame `{"error":{…}}` in-band (após o 200) vira
 /// `AiError::Http` (não é engolido).
-fn openai_stream_delta(data: &str) -> Result<Option<String>> {
+pub fn openai_stream_delta(data: &str) -> Result<Option<String>> {
     if data == "[DONE]" {
         return Ok(None);
     }
@@ -273,7 +357,7 @@ fn openai_stream_delta(data: &str) -> Result<Option<String>> {
 /// `candidates[0].content.parts[*].text`. `promptFeedback.blockReason` → erro
 /// (mesma política de `gemini_extract`). Um objeto `error` in-band (após o 200) vira
 /// `AiError::Http` (não é engolido).
-fn gemini_stream_delta(data: &str) -> Result<Option<String>> {
+pub fn gemini_stream_delta(data: &str) -> Result<Option<String>> {
     let v: Value = match serde_json::from_str(data) {
         Ok(v) => v,
         Err(_) => return Ok(None),
@@ -306,7 +390,7 @@ fn gemini_stream_delta(data: &str) -> Result<Option<String>> {
 /// Ollama (NDJSON, SEM prefixo `data:`): a linha INTEIRA é um objeto JSON;
 /// emite `message.content`. Linha em branco/parcial → `Ok(None)`. Uma linha
 /// `{"error":"…"}` in-band vira `AiError::Http` (não é engolida).
-fn ollama_stream_delta(line: &str) -> Result<Option<String>> {
+pub fn ollama_stream_delta(line: &str) -> Result<Option<String>> {
     let v: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(_) => return Ok(None),
@@ -331,7 +415,7 @@ pub struct AnthropicProvider {
     model: String,
 }
 
-fn anthropic_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
+pub fn anthropic_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
     json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -342,7 +426,7 @@ fn anthropic_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Val
     })
 }
 
-fn anthropic_chat_body(
+pub fn anthropic_chat_body(
     model: &str,
     system: &str,
     messages: &[ChatMessage],
@@ -358,7 +442,7 @@ fn anthropic_chat_body(
 }
 
 /// Extrai o texto dos blocos `type == "text"` (ignora blocos de pensamento).
-fn anthropic_extract(v: &Value) -> Result<String> {
+pub fn anthropic_extract(v: &Value) -> Result<String> {
     if v.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
         return Err(AiError::BadResponse(
             "o modelo recusou a solicitação (refusal)".into(),
@@ -415,21 +499,19 @@ impl LlmProvider for AnthropicProvider {
 #[cfg(feature = "embedded")]
 impl AnthropicProvider {
     fn post(&self, body: Value) -> Result<String> {
-        let req = blocking_client()?
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body);
+        let req = apply_headers(
+            blocking_client()?.post(ANTHROPIC_URL),
+            &anthropic_headers(&self.key, false),
+        )
+        .json(&body);
         anthropic_extract(&send_json(req)?)
     }
     fn post_stream(&self, body: Value, on_token: &mut dyn FnMut(&str)) -> Result<String> {
-        let req = blocking_client()?
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body);
+        let req = apply_headers(
+            blocking_client()?.post(ANTHROPIC_URL),
+            &anthropic_headers(&self.key, false),
+        )
+        .json(&body);
         let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
         stream_response(resp, on_token, |line| match sse_data(line) {
             Some(data) => anthropic_stream_delta(data),
@@ -449,7 +531,7 @@ pub struct OpenAiProvider {
     model: String,
 }
 
-fn openai_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
+pub fn openai_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
     json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -460,13 +542,18 @@ fn openai_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value 
     })
 }
 
-fn openai_chat_body(model: &str, system: &str, messages: &[ChatMessage], max_tokens: u32) -> Value {
+pub fn openai_chat_body(
+    model: &str,
+    system: &str,
+    messages: &[ChatMessage],
+    max_tokens: u32,
+) -> Value {
     let mut msgs = vec![json!({ "role": "system", "content": system })];
     msgs.extend(messages_json(messages));
     json!({ "model": model, "max_tokens": max_tokens, "messages": msgs })
 }
 
-fn openai_extract(v: &Value) -> Result<String> {
+pub fn openai_extract(v: &Value) -> Result<String> {
     let text = v
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
@@ -510,19 +597,19 @@ impl LlmProvider for OpenAiProvider {
 #[cfg(feature = "embedded")]
 impl OpenAiProvider {
     fn post(&self, body: Value) -> Result<String> {
-        let req = blocking_client()?
-            .post("https://api.openai.com/v1/chat/completions")
-            .header("authorization", format!("Bearer {}", self.key))
-            .header("content-type", "application/json")
-            .json(&body);
+        let req = apply_headers(
+            blocking_client()?.post(OPENAI_URL),
+            &openai_headers(&self.key),
+        )
+        .json(&body);
         openai_extract(&send_json(req)?)
     }
     fn post_stream(&self, body: Value, on_token: &mut dyn FnMut(&str)) -> Result<String> {
-        let req = blocking_client()?
-            .post("https://api.openai.com/v1/chat/completions")
-            .header("authorization", format!("Bearer {}", self.key))
-            .header("content-type", "application/json")
-            .json(&body);
+        let req = apply_headers(
+            blocking_client()?.post(OPENAI_URL),
+            &openai_headers(&self.key),
+        )
+        .json(&body);
         let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
         stream_response(resp, on_token, |line| match sse_data(line) {
             Some(data) => openai_stream_delta(data),
@@ -542,7 +629,7 @@ pub struct OllamaProvider {
     model: String,
 }
 
-fn ollama_body(model: &str, system: &str, user: &str) -> Value {
+pub fn ollama_body(model: &str, system: &str, user: &str) -> Value {
     json!({
         "model": model,
         "stream": false,
@@ -553,13 +640,13 @@ fn ollama_body(model: &str, system: &str, user: &str) -> Value {
     })
 }
 
-fn ollama_chat_body(model: &str, system: &str, messages: &[ChatMessage]) -> Value {
+pub fn ollama_chat_body(model: &str, system: &str, messages: &[ChatMessage]) -> Value {
     let mut msgs = vec![json!({ "role": "system", "content": system })];
     msgs.extend(messages_json(messages));
     json!({ "model": model, "stream": false, "messages": msgs })
 }
 
-fn ollama_extract(v: &Value) -> Result<String> {
+pub fn ollama_extract(v: &Value) -> Result<String> {
     let text = v
         .pointer("/message/content")
         .and_then(Value::as_str)
@@ -599,19 +686,19 @@ impl LlmProvider for OllamaProvider {
 #[cfg(feature = "embedded")]
 impl OllamaProvider {
     fn post(&self, body: Value) -> Result<String> {
-        let url = format!("{}/api/chat", self.host.trim_end_matches('/'));
-        let req = blocking_client()?
-            .post(url)
-            .header("content-type", "application/json")
-            .json(&body);
+        let req = apply_headers(
+            blocking_client()?.post(ollama_url(&self.host)),
+            &ollama_headers(),
+        )
+        .json(&body);
         ollama_extract(&send_json(req)?)
     }
     fn post_stream(&self, body: Value, on_token: &mut dyn FnMut(&str)) -> Result<String> {
-        let url = format!("{}/api/chat", self.host.trim_end_matches('/'));
-        let req = blocking_client()?
-            .post(url)
-            .header("content-type", "application/json")
-            .json(&body);
+        let req = apply_headers(
+            blocking_client()?.post(ollama_url(&self.host)),
+            &ollama_headers(),
+        )
+        .json(&body);
         let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
         // NDJSON: a linha inteira É o JSON (sem `data:`).
         stream_response(resp, on_token, ollama_stream_delta)
@@ -635,7 +722,7 @@ pub struct GeminiProvider {
 /// Corpo `generateContent` single-turn. `system` vira `system_instruction`; o
 /// `model` não entra no corpo (vai na URL) — o parâmetro é mantido por simetria
 /// com os demais `*_body` e para deixar a assinatura auto-documentada.
-fn gemini_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
+pub fn gemini_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
     let _ = model;
     json!({
         "contents": [
@@ -648,7 +735,12 @@ fn gemini_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value 
 
 /// Corpo `generateContent` multi-turno. O papel do assistente na Gemini é
 /// `"model"` (não `"assistant"`).
-fn gemini_chat_body(model: &str, system: &str, messages: &[ChatMessage], max_tokens: u32) -> Value {
+pub fn gemini_chat_body(
+    model: &str,
+    system: &str,
+    messages: &[ChatMessage],
+    max_tokens: u32,
+) -> Value {
     let _ = model;
     let contents: Vec<Value> = messages
         .iter()
@@ -671,7 +763,7 @@ fn gemini_chat_body(model: &str, system: &str, messages: &[ChatMessage], max_tok
 ///
 /// Sem `candidates` a resposta pode ter sido **bloqueada** (segurança): tenta ler
 /// `promptFeedback.blockReason` para uma mensagem clara, senão erro genérico.
-fn gemini_extract(v: &Value) -> Result<String> {
+pub fn gemini_extract(v: &Value) -> Result<String> {
     let candidates = v
         .get("candidates")
         .and_then(Value::as_array)
@@ -739,28 +831,20 @@ impl LlmProvider for GeminiProvider {
 impl GeminiProvider {
     fn post(&self, body: Value) -> Result<String> {
         // O modelo vai na URL; a chave vai no header (nunca na URL/log).
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-            self.model
-        );
-        let req = blocking_client()?
-            .post(url)
-            .header("x-goog-api-key", &self.key)
-            .header("content-type", "application/json")
-            .json(&body);
+        let req = apply_headers(
+            blocking_client()?.post(gemini_url(&self.model, false)),
+            &gemini_headers(&self.key),
+        )
+        .json(&body);
         gemini_extract(&send_json(req)?)
     }
     fn post_stream(&self, body: Value, on_token: &mut dyn FnMut(&str)) -> Result<String> {
         // Streaming SSE selecionado pelo endpoint `:streamGenerateContent?alt=sse`.
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
-            self.model
-        );
-        let req = blocking_client()?
-            .post(url)
-            .header("x-goog-api-key", &self.key)
-            .header("content-type", "application/json")
-            .json(&body);
+        let req = apply_headers(
+            blocking_client()?.post(gemini_url(&self.model, true)),
+            &gemini_headers(&self.key),
+        )
+        .json(&body);
         let resp = req.send().map_err(|e| AiError::Http(e.to_string()))?;
         stream_response(resp, on_token, |line| match sse_data(line) {
             Some(data) => gemini_stream_delta(data),
@@ -770,7 +854,7 @@ impl GeminiProvider {
 }
 
 /// Extrai uma mensagem de erro legível de respostas de erro variadas.
-fn api_error_msg(v: &Value) -> String {
+pub fn api_error_msg(v: &Value) -> String {
     v.pointer("/error/message")
         .or_else(|| v.get("error"))
         .and_then(Value::as_str)
@@ -975,6 +1059,56 @@ mod tests {
         assert_eq!(api_error_msg(&v), "chave inválida");
         let v2 = json!({ "error": "string simples" });
         assert_eq!(api_error_msg(&v2), "string simples");
+    }
+
+    #[test]
+    fn transport_data_surface_urls_and_headers() {
+        // Contrato DATA-ONLY (ADR-0062): o alvo web IMPORTA estes valores. Este teste
+        // é a fonte da verdade que o espelho TS deve reproduzir byte-a-byte.
+        assert_eq!(DEFAULT_MAX_TOKENS, 8192);
+        assert_eq!(ANTHROPIC_URL, "https://api.anthropic.com/v1/messages");
+        assert_eq!(OPENAI_URL, "https://api.openai.com/v1/chat/completions");
+        assert_eq!(OLLAMA_DEFAULT_HOST, "http://localhost:11434");
+        assert_eq!(ollama_url("http://h:1/"), "http://h:1/api/chat");
+        assert_eq!(
+            gemini_url("gemini-2.5-flash", false),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        );
+        assert_eq!(
+            gemini_url("gemini-2.5-flash", true),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+        );
+
+        // Headers: o nativo (browser=false) NÃO manda o header de CORS; o web (true) sim.
+        assert_eq!(
+            anthropic_headers("K", false),
+            vec![
+                ("x-api-key".to_string(), "K".to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ]
+        );
+        assert!(anthropic_headers("K", true)
+            .iter()
+            .any(|(k, v)| k == "anthropic-dangerous-direct-browser-access" && v == "true"));
+        assert_eq!(
+            openai_headers("K"),
+            vec![
+                ("authorization".to_string(), "Bearer K".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ]
+        );
+        assert_eq!(
+            ollama_headers(),
+            vec![("content-type".to_string(), "application/json".to_string())]
+        );
+        assert_eq!(
+            gemini_headers("K"),
+            vec![
+                ("x-goog-api-key".to_string(), "K".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ]
+        );
     }
 }
 
