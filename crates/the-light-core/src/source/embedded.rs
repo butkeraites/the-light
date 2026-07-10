@@ -2,11 +2,11 @@
 
 use std::str::FromStr;
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use super::{BibleSource, Result, SourceError};
 use crate::model::{
-    Lang, License, Passage, Reference, SearchHit, Translation, TranslationId, Verse, VerseRange,
+    Lang, License, Passage, Reference, SearchHit, Translation, TranslationId, Verse,
 };
 use crate::search::{self, SearchOptions};
 use crate::store::Store;
@@ -29,9 +29,10 @@ impl<'a> EmbeddedSource<'a> {
 
     /// Número de capítulos de um livro numa tradução (0 se ausente).
     pub fn chapter_count(&self, book: u8, t: &TranslationId) -> Result<u16> {
+        let (sql, params) = crate::query::chapter_count_plan(book, t.as_str());
         let max: Option<i64> = self.conn.query_row(
-            "SELECT max(chapter) FROM verses WHERE translation_id = ?1 AND book_number = ?2",
-            params![t.as_str(), book as i64],
+            &sql,
+            rusqlite::params_from_iter(params.into_iter().map(rusqlite::types::Value::from)),
             |r| r.get(0),
         )?;
         Ok(max.unwrap_or(0) as u16)
@@ -40,10 +41,7 @@ impl<'a> EmbeddedSource<'a> {
 
 impl BibleSource for EmbeddedSource<'_> {
     fn translations(&self) -> Result<Vec<Translation>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, abbrev, name, language, license, embeddable \
-             FROM translations ORDER BY language, id",
-        )?;
+        let mut stmt = self.conn.prepare(crate::query::TRANSLATIONS_SELECT)?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let abbrev: String = row.get(1)?;
@@ -70,11 +68,12 @@ impl BibleSource for EmbeddedSource<'_> {
     }
 
     fn has_translation(&self, t: &TranslationId) -> Result<bool> {
+        let (sql, params) = crate::query::has_translation_plan(t.as_str());
         let found: Option<i64> = self
             .conn
             .query_row(
-                "SELECT 1 FROM translations WHERE id = ?1",
-                params![t.as_str()],
+                &sql,
+                rusqlite::params_from_iter(params.into_iter().map(rusqlite::types::Value::from)),
                 |r| r.get(0),
             )
             .ok();
@@ -86,50 +85,18 @@ impl BibleSource for EmbeddedSource<'_> {
             return Err(SourceError::UnknownTranslation(t.to_string()));
         }
 
-        let (sql, lo, hi) = match r.verses {
-            VerseRange::WholeChapter => (
-                "SELECT verse, text FROM verses \
-                 WHERE translation_id = ?1 AND book_number = ?2 AND chapter = ?3 \
-                 ORDER BY verse",
-                None,
-                None,
-            ),
-            VerseRange::Single(v) => (
-                "SELECT verse, text FROM verses \
-                 WHERE translation_id = ?1 AND book_number = ?2 AND chapter = ?3 AND verse = ?4 \
-                 ORDER BY verse",
-                Some(v),
-                None,
-            ),
-            VerseRange::Range { start, end } => (
-                "SELECT verse, text FROM verses \
-                 WHERE translation_id = ?1 AND book_number = ?2 AND chapter = ?3 \
-                 AND verse BETWEEN ?4 AND ?5 ORDER BY verse",
-                Some(start),
-                Some(end),
-            ),
-        };
-
-        let mut stmt = self.conn.prepare(sql)?;
-        let book = r.book as i64;
-        let chapter = r.chapter as i64;
+        // SQL + params (cobrindo WholeChapter/Single/Range) vêm do plano puro.
+        let (sql, params) = crate::query::passage_plan(r, t.as_str());
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(u16, String)> {
             Ok((row.get::<_, i64>(0)? as u16, row.get::<_, String>(1)?))
         };
 
-        let rows = match (lo, hi) {
-            (None, None) => stmt.query_map(params![t.as_str(), book, chapter], map_row)?,
-            (Some(v), None) => {
-                stmt.query_map(params![t.as_str(), book, chapter, v as i64], map_row)?
-            }
-            (Some(a), Some(b)) => stmt.query_map(
-                params![t.as_str(), book, chapter, a as i64, b as i64],
-                map_row,
-            )?,
-            // `hi` sem `lo` não é produzido por nenhuma variante de VerseRange.
-            (None, Some(_)) => unreachable!("limite superior sem inferior"),
-        };
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(params.into_iter().map(rusqlite::types::Value::from)),
+            map_row,
+        )?;
 
         let mut verses = Vec::new();
         for row in rows {
@@ -164,7 +131,9 @@ impl BibleSource for EmbeddedSource<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::VerseRange;
     use crate::reference::parse_reference;
+    use rusqlite::params;
 
     fn seeded_store() -> Store {
         let store = Store::open_in_memory().unwrap();

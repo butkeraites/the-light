@@ -11,6 +11,9 @@
 
 // Núcleo PURO — sempre disponível (compila para wasm32 sem store/rede):
 pub mod model;
+// `query` é PURO (ai-pure/wasm-safe): planejadores de SQL `(sql, params)` como DADO,
+// fonte única para o nativo (rusqlite) e o web (wa-sqlite). ADR-0062.
+pub mod query;
 pub mod reference;
 
 // Camada PESADA — só com a feature `embedded` (store SQLite, rede, persistência).

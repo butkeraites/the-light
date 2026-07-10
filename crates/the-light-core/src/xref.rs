@@ -3,7 +3,7 @@
 //! Os dados são importados para a tabela `cross_references` (ver `xtask`). A
 //! atribuição CC-BY ao OpenBible.info é obrigatória — ver `DATA_SOURCES.md`.
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::model::{Lang, Reference, VerseRange};
 use crate::reference::format_reference;
@@ -32,16 +32,11 @@ pub fn for_verse(
     min_votes: i64,
     limit: usize,
 ) -> rusqlite::Result<Vec<CrossRef>> {
-    let limit = limit.clamp(1, i64::MAX as usize) as i64;
-    let mut stmt = conn.prepare(
-        "SELECT to_book, to_chapter, to_verse_start, to_verse_end, votes \
-         FROM cross_references \
-         WHERE from_book = ?1 AND from_chapter = ?2 AND from_verse = ?3 AND votes >= ?4 \
-         ORDER BY votes DESC, to_book, to_chapter, to_verse_start \
-         LIMIT ?5",
-    )?;
+    // SQL + params como DADO (fonte única nativo↔web); o clamp de limite vive no plano.
+    let (sql, params) = crate::query::xref_plan(book, chapter, verse, min_votes, limit);
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
-        params![book as i64, chapter as i64, verse as i64, min_votes, limit],
+        rusqlite::params_from_iter(params.into_iter().map(rusqlite::types::Value::from)),
         |row| {
             let to_book: i64 = row.get(0)?;
             let to_chapter: i64 = row.get(1)?;
@@ -131,6 +126,7 @@ pub fn passage_labels(
 mod tests {
     use super::*;
     use crate::store::Store;
+    use rusqlite::params;
 
     fn seeded() -> Store {
         let store = Store::open_in_memory().unwrap();
